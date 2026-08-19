@@ -8,10 +8,11 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import About from "./pages/About";
 import Home from "./pages/Home";
+import VendorAssets from "./pages/VendorAssets";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
-  return <Switch><Route path="/" component={Home} /><Route path="/about" component={About} /><Route component={Home} /></Switch>;
+  return <Switch><Route path="/" component={Home} /><Route path="/about" component={About} /><Route path="/vendor-assets" component={VendorAssets} /><Route component={Home} /></Switch>;
 }
 
 export default function App() {

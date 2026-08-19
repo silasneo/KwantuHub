@@ -103,7 +103,8 @@ export function SiteHeader({ onNotice }: ChromeProps) {
           </form>
 
           <div className="account-actions" aria-label="Account actions">
-            {["Inquiries", "Favorites", "Vendor Portal"].map((item) => <button key={item} type="button" onClick={() => notice(item)}>{item}</button>)}
+            {["Inquiries", "Favorites"].map((item) => <button key={item} type="button" onClick={() => notice(item)}>{item}</button>)}
+            <Link href="/vendor-assets" onClick={closeAll}>Vendor Portal</Link>
           </div>
 
           <button className="mobile-menu-button" type="button" aria-label={mobileOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileOpen} onClick={() => { setMobileOpen(!mobileOpen); if (mobileOpen) setMegaOpen(false); }}>

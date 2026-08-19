@@ -1,9 +1,10 @@
 /**
  * Diaspora Market Almanac: asymmetric editorial marketplace homepage with warm paper, ink, and Nok-gradient signals.
  */
-import { ArrowRight, Check, Heart, MapPin, MessageCircle, MoveUpRight, ShieldCheck, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, Check, ChevronLeft, ChevronRight, Heart, MapPin, MessageCircle, MoveUpRight, Pause, Play, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
 import { SiteFooter, SiteHeader } from "@/components/SiteChrome";
+import { heroSlides } from "@/data/heroSlides";
 
 const assets = {
   fashion: "/manus-storage/kwantu-hero-fashion-maker_20399257.jpg",
@@ -37,41 +38,51 @@ const vendors = [
 const languages = ["Amharic", "Yorùbá", "Igbo", "Twi", "Kiswahili", "Wolof", "Hausa", "Zulu", "Ewe", "Lingala", "Shona", "Somali", "Akan", "Oromo", "Bambara", "Kikongo", "Fula", "Krio", "Xhosa", "Tigrinya", "Bété", "Sango", "Sesotho", "Arabic"];
 
 export default function Home() {
-  // The useAuth hook provides authentication state.
-  // To implement login/logout, call logout(), or start login from an event
-  // handler: onClick={() => startLogin()} (imported from "@/const"). Never call
-  // startLogin() during render (no href={startLogin()}) — it mints a one-time
-  // nonce cookie and must run only at the moment of navigation.
-  let { user, loading, error, isAuthenticated, logout } = useAuth();
-
   const [notice, setNotice] = useState("");
+  const [activeSlide, setActiveSlide] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
   const notify = (message: string) => {
     setNotice(message);
     window.setTimeout(() => setNotice(""), 3000);
   };
+  const selectSlide = (index: number) => setActiveSlide((index + heroSlides.length) % heroSlides.length);
+  const activeHero = heroSlides[activeSlide];
+
+  useEffect(() => {
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (isPaused || reduceMotion) return;
+    const timer = window.setInterval(() => selectSlide(activeSlide + 1), 8000);
+    return () => window.clearInterval(timer);
+  }, [activeSlide, isPaused]);
 
   return (
     <div className="app-frame">
       <SiteHeader onNotice={notify} />
       <main>
-        <section className="hero-section">
-          <div className="page-shell hero-layout">
+        <section className={`hero-section hero-slider hero-slider--${activeHero.tone}`} aria-roledescription="carousel" aria-label="KwantuHub marketplace stories">
+          <div className="hero-background" key={activeHero.id} role="img" aria-label={activeHero.imageAlt} style={{ backgroundImage: `url(${activeHero.image})`, backgroundPosition: activeHero.position }} />
+          <div className="hero-image-scrim" aria-hidden="true" />
+          <div className="page-shell hero-slider-layout">
             <div className="hero-copy">
-              <p className="hero-eyebrow"><span className="gradient-dot" /> KwantuHub: The African Diaspora Marketplace</p>
-              <h1>Where the diaspora <em>finds home.</em></h1>
-              <p className="hero-dek">Fabrics, food, language tutors, and wedding services from verified diaspora creators across North America.</p>
+              <p className="hero-eyebrow"><span className="gradient-dot" /> {activeHero.eyebrow}</p>
+              <h1>{activeHero.headline} <em>{activeHero.emphasis}</em></h1>
+              <p className="hero-dek">{activeHero.description}</p>
               <div className="hero-actions">
-                <a className="button button-primary" href="#categories">Explore Marketplace <ArrowRight size={18} /></a>
-                <button className="button button-outline" type="button" onClick={() => notify("Vendor applications are opening soon.")}>List Your Business</button>
+                <a className="button button-primary" href={activeHero.primaryHref} onClick={(event) => { if (activeSlide === 2) { event.preventDefault(); notify("The Christmas sale category is being prepared for launch."); } }}>{activeHero.primaryLabel} <ArrowRight size={18} /></a>
+                <button className="button button-outline" type="button" onClick={() => notify(activeSlide === 0 ? "Vendor applications are opening soon." : activeSlide === 1 ? "The maker archive is opening soon." : "Gift guides are coming soon.")}>{activeHero.secondaryLabel}</button>
               </div>
-              <div className="hero-caption"><span>01</span><p>Meet the people behind the work before you make an inquiry.</p></div>
+              <div className="hero-caption"><span>{activeHero.id}</span><p>{activeHero.note}</p></div>
             </div>
-            <div className="hero-collage" aria-label="KwantuHub community makers and services">
-              <figure className="collage-photo collage-main"><img src={assets.fashion} alt="Diaspora textile maker arranging a hand-dyed textile" /></figure>
-              <figure className="collage-photo collage-top"><img src={assets.artisan} alt="Handmade ceramics and woven goods" /></figure>
-              <figure className="collage-photo collage-bottom"><img src={assets.catering} alt="Diaspora caterer preparing a shared table" /></figure>
-              <div className="collage-stamp"><Sparkles size={18} /><span>Discover<br />with care</span></div>
-              <div className="gradient-orbit" />
+            <div className="hero-slider-footer" aria-label="Hero carousel controls">
+              <p><span>{activeHero.id}</span> <b>{activeHero.label}</b></p>
+              <div className="hero-slider-buttons">
+                <button type="button" className="hero-control" onClick={() => selectSlide(activeSlide - 1)} aria-label="Previous hero slide"><ChevronLeft size={19} /></button>
+                <div className="hero-dots" role="tablist" aria-label="Choose a hero slide">
+                  {heroSlides.map((slide, index) => <button type="button" role="tab" aria-selected={index === activeSlide} aria-label={`Show slide ${index + 1}: ${slide.label}`} className={index === activeSlide ? "is-active" : ""} key={slide.id} onClick={() => selectSlide(index)} />)}
+                </div>
+                <button type="button" className="hero-control" onClick={() => selectSlide(activeSlide + 1)} aria-label="Next hero slide"><ChevronRight size={19} /></button>
+                <button type="button" className="hero-control hero-pause" onClick={() => setIsPaused(!isPaused)} aria-label={isPaused ? "Resume automatic carousel rotation" : "Pause automatic carousel rotation"}>{isPaused ? <Play size={15} /> : <Pause size={15} />}</button>
+              </div>
             </div>
           </div>
         </section>

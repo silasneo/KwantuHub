@@ -1,0 +1,42 @@
+{
+  "build_command": "pnpm run build",
+  "capabilities": [
+    "db",
+    "server",
+    "user"
+  ],
+  "dev_command": "pnpm run dev",
+  "env_vars": {
+    "DATABASE_URL": "mysql://3wXfY5axq7s458M.root:f3aCdLxDr1kW2d7w2r0h@gateway03.us-east-1.prod.aws.tidbcloud.com:4000/7pmKrERGiX8cEBr2xYrqf5?ssl={\"rejectUnauthorized\":true}",
+    "DRIZZLE_DATABASE_URL": "mysql://3wXfY5axq7s458M.root:f3aCdLxDr1kW2d7w2r0h@gateway03.us-east-1.prod.aws.tidbcloud.com:4000/7pmKrERGiX8cEBr2xYrqf5?ssl={\"rejectUnauthorized\":true}",
+    "MANUS_WEBDEV_PROJECT_ID": "7pmKrERGiX8cEBr2xYrqf5"
+  },
+  "experiments": null,
+  "git_remote": {
+    "repo_url": "https://7f0548f6b28a1758d9bf7be630d36cb4.artifacts.cloudflare.net/git/prod/7pmKrERGiX8cEBr2xYrqf5.git",
+    "expiration": "2026-08-20T11:42:50.758Z",
+    "token": "art_v2_x_5aac39343bfdd84b52dee3ced9d322ecf320a30c?expires=1787226170",
+    "backend": "GIT_BACKEND_ARTIFACTS"
+  },
+  "name": "kwantuhub-marketplace",
+  "path": "/home/ubuntu/kwantuhub-marketplace",
+  "port": 3000,
+  "secrets": {
+    "BUILT_IN_FORGE_API_KEY": "iatXNtGAZxNjz4W7tgnpxY",
+    "BUILT_IN_FORGE_API_URL": "https://forge.manus.ai",
+    "JWT_SECRET": "bkWFHLWcwe5J7hd4RoK44c",
+    "OAUTH_SERVER_URL": "https://api.manus.im",
+    "OWNER_NAME": "Silas Okwoche",
+    "OWNER_OPEN_ID": "aAT22hPr4JDpyNvyzYiC8t",
+    "VITE_ANALYTICS_ENDPOINT": "https://manus-analytics.com",
+    "VITE_ANALYTICS_WEBSITE_ID": "76cc567b-b213-4fd2-81f7-8781797a0c6d",
+    "VITE_APP_ID": "7pmKrERGiX8cEBr2xYrqf5",
+    "VITE_APP_LOGO": "https://files.manuscdn.com/user_upload_by_module/web_dev_logo/310519663895305097/UntsUQhvMuIJwRDv.png",
+    "VITE_APP_TITLE": "KwantuHub — Where the diaspora finds home.",
+    "VITE_FRONTEND_FORGE_API_KEY": "X5po4WVJQJKRmVvp9y6SKG",
+    "VITE_FRONTEND_FORGE_API_URL": "https://forge.manus.ai",
+    "VITE_OAUTH_PORTAL_URL": "https://manus.im"
+  },
+  "template_id": "web-static",
+  "test_command": "pnpm test"
+}

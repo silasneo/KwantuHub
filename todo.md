@@ -2,10 +2,10 @@
 
 ## Full-Stack File Storage Upgrade
 
-- [ ] Inspect GitHub access and identify or initialize the KwantuHub repository.
-- [ ] Prepare the standalone HTML package as a GitHub Pages publication directory.
-- [ ] Push the KwantuHub project source and standalone Pages files after explicit confirmation.
-- [ ] Enable GitHub Pages and verify the published homepage and About page.
+- [x] Inspect GitHub access and identify or initialize the KwantuHub repository.
+- [x] Prepare the standalone HTML package as a GitHub Pages publication directory.
+- [x] Push the KwantuHub project source and standalone Pages files after explicit confirmation.
+- [x] Enable GitHub Pages and verify the published homepage and About page.
 - [x] Package the standalone pages and required local assets into an offline-ready ZIP archive.
 - [ ] Confirm the initial vendor asset flow and file types supported by the interface.
 - [ ] Upgrade KwantuHub to the managed full-stack project foundation.

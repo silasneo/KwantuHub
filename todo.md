@@ -31,4 +31,4 @@
 
 ## Publish
 
-- [ ] Commit and push this release to GitHub after final checkpoint.
+- [x] Commit and push this release to GitHub in PR #3 after final checkpoint.

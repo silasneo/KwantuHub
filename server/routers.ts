@@ -11,6 +11,11 @@ import {
   getFeatureFlags,
   getDb,
   getListingBySlug,
+  getViewHistory,
+  removeViewHistoryItem,
+  clearViewHistory,
+  getBuyerReviews,
+  getListingReviews,
   getRelatedListings,
   getStorefrontBySlug,
   getUserByEmail,
@@ -298,8 +303,8 @@ export const appRouter = router({
 
     getListing: publicProcedure
       .input(z.object({ slug: z.string() }))
-      .query(async ({ input }) => {
-        const item = await getListingBySlug(input.slug);
+      .query(async ({ ctx, input }) => {
+        const item = await getListingBySlug(input.slug, ctx.user?.id);
         if (!item)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -307,6 +312,10 @@ export const appRouter = router({
           });
         return item;
       }),
+
+    reviews: publicProcedure
+      .input(z.object({ listingId: z.number().int().positive() }))
+      .query(async ({ input }) => getListingReviews(input.listingId)),
 
     revealContact: publicProcedure
       .input(
@@ -455,6 +464,69 @@ export const appRouter = router({
           });
           return { saved: true };
         }
+      }),
+
+    viewHistory: protectedProcedure.query(async ({ ctx }) =>
+      getViewHistory(ctx.user.id)
+    ),
+
+    removeViewHistory: protectedProcedure
+      .input(z.object({ listingId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        await removeViewHistoryItem(ctx.user.id, input.listingId);
+        return { success: true };
+      }),
+
+    clearViewHistory: protectedProcedure.mutation(async ({ ctx }) => {
+      await clearViewHistory(ctx.user.id);
+      return { success: true };
+    }),
+
+    reviews: protectedProcedure.query(async ({ ctx }) => getBuyerReviews(ctx.user.id)),
+
+    submitReview: protectedProcedure
+      .input(
+        z.object({
+          listingId: z.number().int().positive(),
+          rating: z.number().int().min(1).max(5),
+          comment: z.string().trim().min(2).max(2000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [listing] = await db
+          .select({ id: listings.id, vendorId: listings.vendorId, status: listings.status })
+          .from(listings)
+          .where(eq(listings.id, input.listingId))
+          .limit(1);
+        if (!listing || listing.status !== "published") {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Listing not found" });
+        }
+        const existing = await db
+          .select({ id: reviews.id })
+          .from(reviews)
+          .where(and(eq(reviews.listingId, input.listingId), eq(reviews.buyerId, ctx.user.id)))
+          .limit(1);
+        if (existing.length) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You have already reviewed this listing" });
+        }
+        const [created] = await db.insert(reviews).values({
+          listingId: listing.id,
+          vendorId: listing.vendorId,
+          buyerId: ctx.user.id,
+          rating: input.rating,
+          comment: input.comment || null,
+          status: "pending",
+        });
+        await recordAnalyticsEvent({
+          eventType: "submit_review",
+          userId: ctx.user.id,
+          vendorId: listing.vendorId,
+          listingId: listing.id,
+          metadata: { rating: input.rating },
+        });
+        return { reviewId: created.insertId, status: "pending" as const };
       }),
 
     inquiries: protectedProcedure.query(async ({ ctx }) => {

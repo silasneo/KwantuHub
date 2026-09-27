@@ -22,6 +22,10 @@ export default function MarketplacePage() {
   const [remoteOnly, setRemoteOnly] = useState(
     searchParams.get("remote") === "true"
   );
+  const [verifiedOnly, setVerifiedOnly] = useState(
+    searchParams.get("verified") === "true"
+  );
+  const [page, setPage] = useState(Number(searchParams.get("page") || "1"));
   const [sort, setSort] = useState<"newest" | "oldest" | "title">(
     (searchParams.get("sort") as "newest" | "oldest" | "title") || "newest"
   );
@@ -37,9 +41,10 @@ export default function MarketplacePage() {
     minPrice: minPrice ? Number(minPrice) : undefined,
     maxPrice: maxPrice ? Number(maxPrice) : undefined,
     remote: remoteOnly || undefined,
+    verified: verifiedOnly || undefined,
     sort,
-    page: 1,
-    pageSize: 36,
+    page,
+    pageSize: 12,
   });
 
   const toggleWishlist = trpc.buyer.toggleWishlist.useMutation({
@@ -58,10 +63,12 @@ export default function MarketplacePage() {
     if (minPrice) params.set("min", minPrice);
     if (maxPrice) params.set("max", maxPrice);
     if (remoteOnly) params.set("remote", "true");
+    if (verifiedOnly) params.set("verified", "true");
+    if (page > 1) params.set("page", String(page));
     if (sort !== "newest") params.set("sort", sort);
     const newSearch = params.toString() ? `?${params.toString()}` : "";
     window.history.replaceState(null, "", `/marketplace${newSearch}`);
-  }, [q, category, type, location, minPrice, maxPrice, remoteOnly, sort]);
+  }, [q, category, type, location, minPrice, maxPrice, remoteOnly, verifiedOnly, sort, page]);
 
   const clearFilters = () => {
     setQ("");
@@ -71,6 +78,8 @@ export default function MarketplacePage() {
     setMinPrice("");
     setMaxPrice("");
     setRemoteOnly(false);
+    setVerifiedOnly(false);
+    setPage(1);
   };
 
   return (
@@ -245,6 +254,15 @@ export default function MarketplacePage() {
                 />
                 <span>Offers remote / virtual delivery</span>
               </label>
+              <label className="flex items-start gap-2 cursor-pointer text-xs font-serif text-[#333] mt-3">
+                <input
+                  type="checkbox"
+                  checked={verifiedOnly}
+                  onChange={e => setVerifiedOnly(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>Verified Vendor only</span>
+              </label>
             </div>
           </aside>
 
@@ -301,7 +319,8 @@ export default function MarketplacePage() {
               location ||
               minPrice ||
               maxPrice ||
-              remoteOnly) && (
+              remoteOnly ||
+              verifiedOnly) && (
               <div className="flex flex-wrap gap-2 mb-6">
                 {type !== "all" && (
                   <span className="bg-[#0a0a0a] text-[#f0e8dc] text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded flex items-center gap-1.5">
@@ -359,6 +378,12 @@ export default function MarketplacePage() {
                     >
                       ×
                     </button>
+                  </span>
+                )}
+                {verifiedOnly && (
+                  <span className="bg-[#0a0a0a] text-[#f0e8dc] text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded flex items-center gap-1.5">
+                    Verified vendor
+                    <button onClick={() => setVerifiedOnly(false)} className="cursor-pointer">×</button>
                   </span>
                 )}
               </div>
@@ -506,6 +531,30 @@ export default function MarketplacePage() {
                     </div>
                   </Link>
                 ))}
+              </div>
+            )}
+
+            {(data?.pagination?.totalPages || 1) > 1 && (
+              <div className="flex items-center justify-between border-t border-[#d9d0c4] mt-8 pt-5">
+                <button
+                  type="button"
+                  disabled={page <= 1}
+                  onClick={() => setPage(current => Math.max(1, current - 1))}
+                  className="text-xs font-bold uppercase tracking-wider text-[#d71466] disabled:opacity-40"
+                >
+                  ← Previous
+                </button>
+                <span className="text-xs font-serif text-[#68635c]">
+                  Page {data?.pagination.page || page} of {data?.pagination.totalPages || 1}
+                </span>
+                <button
+                  type="button"
+                  disabled={page >= (data?.pagination?.totalPages || 1)}
+                  onClick={() => setPage(current => current + 1)}
+                  className="text-xs font-bold uppercase tracking-wider text-[#d71466] disabled:opacity-40"
+                >
+                  Next →
+                </button>
               </div>
             )}
           </div>

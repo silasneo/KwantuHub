@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   categories,
@@ -209,7 +209,13 @@ export async function searchListings(filters: SearchFilters = {}) {
   }
 
   if (filters.remote) {
-    conditions.push(eq(listings.remoteAvailable, true));
+    conditions.push(
+      or(eq(listings.remoteAvailable, true), eq(vendorProfiles.remoteAvailable, true))!
+    );
+  }
+
+  if (filters.verified) {
+    conditions.push(eq(vendorProfiles.approvalStatus, "approved"));
   }
 
   if (filters.location) {
@@ -244,6 +250,7 @@ export async function searchListings(filters: SearchFilters = {}) {
   const [totalRes] = await db
     .select({ count: sql<number>`count(*)` })
     .from(listings)
+    .innerJoin(vendorProfiles, eq(listings.vendorId, vendorProfiles.id))
     .where(whereClause);
 
   const total = Number(totalRes?.count || 0);
@@ -306,7 +313,29 @@ export async function searchListings(filters: SearchFilters = {}) {
   };
 }
 
-export async function getListingBySlug(slug: string) {
+export async function recordListingView(listingId: number, viewerId?: number) {
+  const db = await getDb();
+  if (!db) return;
+
+  if (viewerId) {
+    const recent = await db
+      .select({ id: listingViews.id })
+      .from(listingViews)
+      .where(
+        and(
+          eq(listingViews.listingId, listingId),
+          eq(listingViews.viewerId, viewerId),
+          gte(listingViews.createdAt, new Date(Date.now() - 30 * 60 * 1000))
+        )
+      )
+      .limit(1);
+    if (recent.length > 0) return;
+  }
+
+  await db.insert(listingViews).values({ listingId, viewerId: viewerId ?? null });
+}
+
+export async function getListingBySlug(slug: string, viewerId?: number) {
   const db = await getDb();
   if (!db) return null;
 
@@ -333,8 +362,8 @@ export async function getListingBySlug(slug: string) {
     .where(eq(listingMedia.listingId, listing.id))
     .orderBy(listingMedia.sortOrder);
 
-  // Track view
-  await db.insert(listingViews).values({ listingId: listing.id });
+  // Track anonymous views and deduplicated authenticated buyer history.
+  await recordListingView(listing.id, viewerId);
 
   return {
     ...listing,
@@ -348,6 +377,72 @@ export async function getListingBySlug(slug: string) {
     },
     media,
   };
+}
+
+export async function getViewHistory(buyerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({ view: listingViews, listing: listings, category: categories })
+    .from(listingViews)
+    .innerJoin(listings, eq(listingViews.listingId, listings.id))
+    .innerJoin(categories, eq(listings.categoryId, categories.id))
+    .where(eq(listingViews.viewerId, buyerId))
+    .orderBy(desc(listingViews.createdAt))
+    .limit(30);
+
+  return Promise.all(
+    rows.map(async ({ view, listing, category }) => {
+      const media = await db
+        .select()
+        .from(listingMedia)
+        .where(eq(listingMedia.listingId, listing.id))
+        .orderBy(listingMedia.sortOrder);
+      return { viewedAt: view.createdAt, listing: { ...listing, category, media } };
+    })
+  );
+}
+
+export async function removeViewHistoryItem(buyerId: number, listingId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .delete(listingViews)
+    .where(and(eq(listingViews.viewerId, buyerId), eq(listingViews.listingId, listingId)));
+}
+
+export async function clearViewHistory(buyerId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(listingViews).where(eq(listingViews.viewerId, buyerId));
+}
+
+export async function getBuyerReviews(buyerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({ review: reviews, listing: listings, vendor: vendorProfiles })
+    .from(reviews)
+    .innerJoin(listings, eq(reviews.listingId, listings.id))
+    .innerJoin(vendorProfiles, eq(reviews.vendorId, vendorProfiles.id))
+    .where(eq(reviews.buyerId, buyerId))
+    .orderBy(desc(reviews.createdAt));
+}
+
+export async function getListingReviews(listingId: number) {
+  const db = await getDb();
+  if (!db) return { reviews: [], averageRating: 0, reviewCount: 0 };
+  const rows = await db
+    .select({ review: reviews, buyer: { id: users.id, name: users.name, avatarUrl: users.avatarUrl } })
+    .from(reviews)
+    .innerJoin(users, eq(reviews.buyerId, users.id))
+    .where(and(eq(reviews.listingId, listingId), eq(reviews.status, "approved")))
+    .orderBy(desc(reviews.createdAt));
+  const averageRating = rows.length
+    ? rows.reduce((sum, row) => sum + row.review.rating, 0) / rows.length
+    : 0;
+  return { reviews: rows, averageRating, reviewCount: rows.length };
 }
 
 export async function getRelatedListings(

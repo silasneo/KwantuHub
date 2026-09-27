@@ -48,9 +48,6 @@ export function SiteHeader() {
             <Link href="/vendors" className="hover:text-[#d71466] transition">
               Vendors
             </Link>
-            <Link href="/about" className="hover:text-[#d71466] transition">
-              Our Story
-            </Link>
           </nav>
 
           {/* Color-branded expandable search bar */}

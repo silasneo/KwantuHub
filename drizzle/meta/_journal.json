@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1790523688544,
+      "tag": "0000_swift_psylocke",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1790523824541,
+      "tag": "0001_natural_tyrannus",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1790526171514,
+      "tag": "0002_early_crusher_hogan",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1790532517063,
+      "tag": "0003_common_wallow",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1790533391353,
+      "tag": "0004_nasty_paper_doll",
+      "breakpoints": true
+    }
+  ]
+}

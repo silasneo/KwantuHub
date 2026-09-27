@@ -1,0 +1,40 @@
+{
+  "passed": true,
+  "base": "http://127.0.0.1:3000",
+  "health": {
+    "status": "ok",
+    "service": "kwantuhub-api",
+    "database": "ok",
+    "timestamp": "2026-09-27T15:04:57.520Z"
+  },
+  "vendor": {
+    "email": "acceptance.vendor.1790521497446@kwantuhub.local",
+    "id": "cmujy9pyb000ypn0rclr18caz",
+    "storefront": "acceptance-textiles-1790521497446"
+  },
+  "listing": {
+    "id": "cmujy9qf70018pn0rw7v13yq6",
+    "slug": "acceptance-ankara-1790521497446",
+    "mediaUrl": "/uploads/listings/cmujy9qf70018pn0rw7v13yq6/4f33285e-77f6-4397-8e28-81b11e935116.png"
+  },
+  "buyer": {
+    "email": "acceptance.buyer.1790521497446@kwantuhub.local"
+  },
+  "inquiry": {
+    "id": "cmujy9tj3001jpn0rv219fdj5",
+    "replyId": "cmujy9tnr001opn0r85zr2ves"
+  },
+  "checks": [
+    "migration-backed health",
+    "vendor preapproval block",
+    "admin approval",
+    "storefront",
+    "listing draft/media/publish",
+    "search filters",
+    "public detail/storefront",
+    "buyer save/inquiry",
+    "vendor reply",
+    "buyer reply visibility",
+    "RBAC rejection"
+  ]
+}

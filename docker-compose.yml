@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kwantuhub
+      POSTGRES_USER: kwantu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kwantu_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kwantu -d kwantuhub"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://kwantu:${POSTGRES_PASSWORD:-kwantu_dev}@db:5432/kwantuhub?schema=public
+      SESSION_SECRET: ${SESSION_SECRET:-replace-this-before-production}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_DIR: /app/public/uploads
+    ports:
+      - "3000:3000"
+    volumes:
+      - uploads_data:/app/public/uploads
+
+volumes:
+  postgres_data:
+  uploads_data:

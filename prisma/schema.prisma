@@ -1,0 +1,256 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  BUYER
+  VENDOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum ListingType {
+  PRODUCT
+  SERVICE
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  PUBLISHED
+  HIDDEN
+  ARCHIVED
+}
+
+enum InquiryStatus {
+  OPEN
+  CLOSED
+}
+
+enum ModerationEntity {
+  VENDOR
+  LISTING
+  REVIEW
+  MESSAGE
+}
+
+model User {
+  id             String         @id @default(cuid())
+  email          String         @unique
+  passwordHash   String
+  name           String
+  role           Role           @default(BUYER)
+  status         UserStatus     @default(ACTIVE)
+  vendorProfile  VendorProfile?
+  sessions       Session[]
+  buyerWishlists Wishlist[]
+  sentMessages   Message[]
+  inquiries      Inquiry[]      @relation("BuyerInquiries")
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model VendorProfile {
+  id              String         @id @default(cuid())
+  userId          String         @unique
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessName    String
+  description     String?
+  location        String?
+  serviceArea     String?
+  remoteAvailable Boolean        @default(false)
+  contactEmail    String?
+  website         String?
+  approvalStatus  ApprovalStatus @default(PENDING)
+  storefront      Storefront?
+  listings        Listing[]
+  inquiries       Inquiry[]      @relation("VendorInquiries")
+  approvedAt      DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([approvalStatus, createdAt])
+}
+
+model Storefront {
+  id              String        @id @default(cuid())
+  vendorId        String        @unique
+  vendor          VendorProfile @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  slug            String        @unique
+  displayName     String
+  headline        String?
+  description     String?
+  location        String?
+  serviceArea     String?
+  remoteAvailable Boolean       @default(false)
+  logoUrl         String?
+  coverUrl        String?
+  website         String?
+  listings        Listing[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model Category {
+  id        String     @id @default(cuid())
+  slug      String     @unique
+  name      String
+  parentId  String?
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryTree")
+  listings  Listing[]
+  isActive  Boolean    @default(true)
+  sortOrder Int        @default(0)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([parentId, sortOrder])
+}
+
+model Listing {
+  id              String         @id @default(cuid())
+  slug            String         @unique
+  vendorId        String
+  vendor          VendorProfile  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  storefrontId    String?
+  storefront      Storefront?    @relation(fields: [storefrontId], references: [id], onDelete: SetNull)
+  categoryId      String
+  category        Category       @relation(fields: [categoryId], references: [id])
+  title           String
+  description     String
+  listingType     ListingType
+  priceIndication String?
+  location        String?
+  remoteAvailable Boolean        @default(false)
+  status          ListingStatus  @default(DRAFT)
+  media           ListingMedia[]
+  wishlists       Wishlist[]
+  inquiries       Inquiry[]
+  views           ListingView[]
+  publishedAt     DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([status, categoryId, listingType, publishedAt])
+  @@index([status, location, publishedAt])
+  @@index([vendorId, status])
+}
+
+model ListingMedia {
+  id         String   @id @default(cuid())
+  listingId  String
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  url        String
+  storageKey String?
+  altText    String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([listingId, sortOrder])
+}
+
+model Wishlist {
+  id        String   @id @default(cuid())
+  buyerId   String
+  buyer     User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([buyerId, listingId])
+  @@index([buyerId, createdAt])
+}
+
+model ListingView {
+  id        String   @id @default(cuid())
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  viewerId  String?
+  createdAt DateTime @default(now())
+
+  @@index([listingId, createdAt])
+}
+
+model Inquiry {
+  id        String        @id @default(cuid())
+  listingId String
+  listing   Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId   String
+  buyer     User          @relation("BuyerInquiries", fields: [buyerId], references: [id], onDelete: Cascade)
+  vendorId  String
+  vendor    VendorProfile @relation("VendorInquiries", fields: [vendorId], references: [id], onDelete: Cascade)
+  subject   String
+  status    InquiryStatus @default(OPEN)
+  messages  Message[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([buyerId, updatedAt])
+  @@index([vendorId, status, updatedAt])
+}
+
+model Message {
+  id        String    @id @default(cuid())
+  inquiryId String
+  inquiry   Inquiry   @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  senderId  String
+  sender    User      @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  body      String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([inquiryId, createdAt])
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  eventType String
+  userId    String?
+  listingId String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([eventType, createdAt])
+  @@index([listingId, createdAt])
+}
+
+model ModerationRecord {
+  id         String           @id @default(cuid())
+  entityType ModerationEntity
+  entityId   String
+  actorId    String
+  action     String
+  reason     String?
+  createdAt  DateTime         @default(now())
+
+  @@index([entityType, entityId, createdAt])
+}

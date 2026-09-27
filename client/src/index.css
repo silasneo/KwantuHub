@@ -1,0 +1,212 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --kohl: #0a0a0a;
+    --bone: #f0e8dc;
+    --pink: #d71466;
+    --orange: #fe8129;
+    --gradient: linear-gradient(100deg, #d71466, #fe8129);
+    --muted: #68635c;
+    --line: #d9d0c4;
+    --serif: "Cormorant Garamond", Georgia, serif;
+    --sans: Inter, ui-sans-serif, system-ui, sans-serif;
+    --cinzel: "Cinzel Decorative", Georgia, serif;
+
+    --background: 40 33% 90%;
+    --foreground: 0 0% 4%;
+    --card: 40 33% 95%;
+    --card-foreground: 0 0% 4%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 4%;
+    --primary: 335 83% 46%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 40 20% 88%;
+    --secondary-foreground: 0 0% 4%;
+    --muted-foreground: 30 6% 38%;
+    --accent: 24 99% 58%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 35 22% 81%;
+    --input: 35 22% 81%;
+    --ring: 335 83% 46%;
+    --radius: 0.25rem;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--bone);
+    color: var(--kohl);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  .font-serif {
+    font-family: var(--serif);
+  }
+
+  .font-brand {
+    font-family: var(--cinzel);
+  }
+}
+
+.brand-gradient {
+  background: linear-gradient(100deg, #d71466, #fe8129);
+}
+
+.brand-gradient-text {
+  background: linear-gradient(100deg, #d71466, #fe8129);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.contact-reveal {
+  margin: 0 auto 4rem;
+  max-width: 72rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 1.5rem;
+  box-shadow: 0 8px 24px rgb(10 10 10 / 5%);
+}
+
+.contact-reveal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.contact-reveal__head h2 {
+  margin: 0.25rem 0;
+  font-size: clamp(1.5rem, 3vw, 2.25rem);
+}
+
+.contact-reveal__head p:not(.eyebrow),
+.contact-reveal__empty {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--serif);
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--pink);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.brand-button {
+  border: 0;
+  background: var(--gradient);
+  color: white;
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  padding: 0.8rem 1.25rem;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.brand-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.contact-reveal__channels {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  margin-top: 1.25rem;
+}
+
+.contact-channel {
+  align-items: center;
+  border: 1px solid #e7ded4;
+  display: flex;
+  justify-content: space-between;
+  padding: 0.9rem 1rem;
+}
+
+.contact-channel__label {
+  color: var(--muted);
+  display: block;
+  font-family: var(--serif);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.contact-channel strong {
+  display: block;
+  font-family: var(--serif);
+  margin-top: 0.2rem;
+  overflow-wrap: anywhere;
+}
+
+.contact-channel button {
+  background: transparent;
+  border: 1px solid var(--pink);
+  color: var(--pink);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0.45rem 0.7rem;
+  text-transform: uppercase;
+}
+
+.form-error {
+  color: #b42318;
+  font-family: var(--serif);
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+}
+
+.portal-metrics {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+}
+
+.portal-metric {
+  background: white;
+  border: 1px solid var(--line);
+  padding: 1rem;
+}
+
+.portal-metric strong {
+  display: block;
+  font-family: var(--serif);
+  font-size: 1.8rem;
+}
+
+.portal-metric span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 640px) {
+  .contact-reveal__head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .contact-reveal__button {
+    width: 100%;
+  }
+}

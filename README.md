@@ -1,86 +1,36 @@
-# KwantuHub MVP
+# KwantuHub Marketplace
 
-Production-oriented Next.js marketplace MVP for African diaspora vendors, service providers, and buyers in North America.
+KwantuHub is a full-stack diaspora marketplace built with React, Vite, tRPC, Drizzle, and the managed WebDev database.
 
-## Stack
+## Current release
 
-- Next.js App Router, React, TypeScript
-- Next.js Route Handlers under `/api/v1/*`
-- PostgreSQL and Prisma ORM
-- Opaque, hashed database-backed sessions in secure HTTP-only cookies
-- Local image-storage adapter for development; S3-compatible production adapter seam
+This release includes the approved `Kwantu-identity.svg` brand mark, a vendor directory with vendor-specific storefronts, prototype-inspired hero slider and managed media, masonry marketplace cards with a sticky filter rail, JWT authentication for buyers/vendors/admins, user profile avatars, vendor listing and inquiry workflows, and admin vendor moderation.
 
-The browser never imports Prisma or accesses PostgreSQL directly.
+## Authentication
 
-## Local setup
+User, vendor, and admin login uses email/password with bcrypt password hashing and a signed `kwantu_jwt` httpOnly cookie. Manus OAuth is not used by the active application login path. Seeded demo accounts use password `DemoPass123!`:
+
+- `admin@kwantuhub.local`
+- `demo.buyer@kwantuhub.local`
+- `demo.vendor.eki@kwantuhub.local`
+
+## API documentation
+
+The live interactive Swagger UI is available at `/api-docs`; the raw OpenAPI 3 JSON contract is available at `/openapi.json`. The documented API is the current tRPC-over-HTTP surface under `/api/trpc`.
+
+## Local development
 
 ```bash
-cp .env.example .env
 pnpm install
-pnpm exec prisma migrate dev
-pnpm run db:seed
 pnpm dev
 ```
 
-Open `http://localhost:3000`. Docker is optional; this project works with any reachable PostgreSQL instance configured through `DATABASE_URL`.
-
-For a reproducible Docker Desktop stack, use the [Docker Desktop runbook](docs/docker-desktop.md).
-
-## Deterministic demo credentials
-
-All seeded accounts use password `DemoPass123!`.
-
-| Role            | Email                             |
-| --------------- | --------------------------------- |
-| Admin           | `admin@kwantuhub.local`           |
-| Buyer           | `demo.buyer@kwantuhub.local`      |
-| Approved vendor | `demo.vendor.eki@kwantuhub.local` |
-
-Demo vendors and listings are explicitly labelled as demo data.
-
-## Verification
+Quality gates:
 
 ```bash
-pnpm run db:validate
-pnpm run db:seed
+pnpm run check
 pnpm test
-pnpm run lint
 pnpm run build
-pnpm run test:acceptance
 ```
 
-The acceptance script uses real HTTP requests and PostgreSQL records to test:
-
-1. Health and database connectivity
-2. Vendor registration/profile submission
-3. Pre-approval publication rejection
-4. Admin approval
-5. Storefront creation
-6. Listing draft, image upload, and publication
-7. Marketplace search/filter and public detail/storefront routes
-8. Buyer save and inquiry
-9. Vendor inbox and reply
-10. Buyer-visible reply and unauthorized RBAC rejection
-
-## Important routes
-
-| Route              | Purpose                                 |
-| ------------------ | --------------------------------------- |
-| `/`                | Branded homepage                        |
-| `/marketplace`     | Searchable and paginated marketplace    |
-| `/listings/[slug]` | Listing detail, save, inquiry           |
-| `/vendors/[slug]`  | Public vendor storefront                |
-| `/vendor`          | Protected vendor dashboard              |
-| `/account`         | Protected buyer saves and conversations |
-| `/admin`           | Protected vendor approvals              |
-| `/api/v1/health`   | Application/database health             |
-
-The current API contract is in [`docs/openapi.yaml`](docs/openapi.yaml).
-
-## Storage
-
-Development uploads are written under `public/uploads` through `lib/storage`. Production should set `STORAGE_DRIVER=s3` and implement/configure the S3-compatible adapter without changing route or service callers. Uploaded binaries are never stored in PostgreSQL.
-
-## Scope guardrails
-
-This is a lead-generation/classifieds marketplace. Checkout, payments, subscriptions, logistics, and advertising are intentionally excluded from the MVP.
+Prototype images and the correct identity mark are stored through the managed `/manus-storage/` path rather than committed to `client/public`.

@@ -8,6 +8,8 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerApiDocs } from "../apiDocs";
+import { getDb } from "../db";
+import { startNotificationOutboxWorker } from "../notificationWorker";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -54,6 +56,12 @@ async function startServer() {
 
   const preferredPort = parseInt(process.env.PORT || "3000");
   const port = await findAvailablePort(preferredPort);
+
+  const db = await getDb();
+  if (db) {
+    startNotificationOutboxWorker(db);
+    console.log("Notification outbox worker started");
+  }
 
   if (port !== preferredPort) {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);

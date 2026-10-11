@@ -30,6 +30,10 @@ export const openapiDocument = {
       name: "Admin",
       description: "Administrator vendor moderation procedures",
     },
+    {
+      name: "Notifications",
+      description: "Authenticated notification inbox, read state, and preferences",
+    },
   ],
   components: {
     securitySchemes: {
@@ -75,6 +79,80 @@ export const openapiDocument = {
     },
   },
   paths: {
+    "/api/trpc/notifications.list": {
+      get: {
+        tags: ["Notifications"],
+        summary: "List the current user's notifications",
+        security: [{ KwantuJwtCookie: [] }],
+        parameters: [{ $ref: "#/components/parameters/TrpcInput" }],
+        responses: {
+          "200": { description: "Notification inbox", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+        },
+      },
+    },
+    "/api/trpc/notifications.unreadCount": {
+      get: {
+        tags: ["Notifications"],
+        summary: "Get the current user's unread notification count",
+        security: [{ KwantuJwtCookie: [] }],
+        parameters: [{ $ref: "#/components/parameters/TrpcInput" }],
+        responses: {
+          "200": { description: "Unread count", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+        },
+      },
+    },
+    "/api/trpc/notifications.markRead": {
+      post: {
+        tags: ["Notifications"],
+        summary: "Mark one notification as read",
+        security: [{ KwantuJwtCookie: [] }],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcMutationInput" } } } },
+        responses: {
+          "200": { description: "Notification marked read", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+          "404": { description: "Notification not found for current user" },
+        },
+      },
+    },
+    "/api/trpc/notifications.markAllRead": {
+      post: {
+        tags: ["Notifications"],
+        summary: "Mark all current-user notifications as read",
+        security: [{ KwantuJwtCookie: [] }],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcMutationInput" } } } },
+        responses: {
+          "200": { description: "Notifications marked read", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+        },
+      },
+    },
+    "/api/trpc/notifications.getPreferences": {
+      get: {
+        tags: ["Notifications"],
+        summary: "Get the current user's notification preferences",
+        security: [{ KwantuJwtCookie: [] }],
+        parameters: [{ $ref: "#/components/parameters/TrpcInput" }],
+        responses: {
+          "200": { description: "Notification preferences", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+        },
+      },
+    },
+    "/api/trpc/notifications.updatePreferences": {
+      post: {
+        tags: ["Notifications"],
+        summary: "Update the current user's notification preferences",
+        security: [{ KwantuJwtCookie: [] }],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcMutationInput" } } } },
+        responses: {
+          "200": { description: "Notification preferences updated", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "400": { description: "Invalid preference value" },
+          "401": { description: "Authentication required" },
+        },
+      },
+    },
     "/api/trpc/auth.me": {
       get: {
         tags: ["Authentication"],

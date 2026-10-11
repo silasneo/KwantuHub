@@ -7,4 +7,9 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  sendPulseClientId: process.env.SENDPULSE_CLIENT_ID ?? "",
+  sendPulseClientSecret: process.env.SENDPULSE_CLIENT_SECRET ?? "",
+  sendPulseApiKey: process.env.SENDPULSE_API_KEY ?? "",
+  sendPulseFromEmail: process.env.SENDPULSE_FROM_EMAIL ?? "",
+  sendPulseFromName: process.env.SENDPULSE_FROM_NAME ?? "KwantuHub",
 };

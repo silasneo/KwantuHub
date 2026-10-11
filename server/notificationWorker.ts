@@ -12,9 +12,11 @@ import {
   notificationOutbox,
   notificationPreferences,
   notifications,
+  users,
   type NotificationOutbox,
 } from "../drizzle/schema";
 import { drizzle } from "drizzle-orm/mysql2";
+import { SendPulseTransactionalEmailAdapter } from "./sendPulseAdapter";
 
 export type NotificationEventType =
   | "INQUIRY_CREATED"
@@ -125,7 +127,11 @@ export async function getOrCreateNotificationPreferences(
   return preferences;
 }
 
-async function processOutboxRow(db: NotificationDatabase, row: NotificationOutbox) {
+async function processOutboxRow(
+  db: NotificationDatabase,
+  row: NotificationOutbox,
+  emailAdapter?: SendPulseTransactionalEmailAdapter
+) {
   const eventType = row.eventType as NotificationEventType;
   const payload = (row.payload || {}) as Record<string, unknown>;
   const preferences = await getOrCreateNotificationPreferences(db, row.recipientUserId);
@@ -190,21 +196,118 @@ async function processOutboxRow(db: NotificationDatabase, row: NotificationOutbo
 
   const emailPreference = getEmailPreferenceField(eventType);
   if (preferences?.[emailPreference]) {
+    const [recipient] = await db
+      .select({ email: users.email, name: users.name })
+      .from(users)
+      .where(eq(users.id, row.recipientUserId))
+      .limit(1);
+    if (recipient?.email) {
+      await deliverEmailNotification(db, row, notificationId, recipient, copy, emailAdapter);
+    }
+  }
+}
+
+async function deliverEmailNotification(
+  db: NotificationDatabase,
+  row: NotificationOutbox,
+  notificationId: number | undefined,
+  recipient: { email: string | null; name: string | null },
+  copy: { title: string; body: string },
+  adapter = new SendPulseTransactionalEmailAdapter()
+) {
+  if (!recipient.email) return;
+  const [existing] = await db
+    .select()
+    .from(notificationDeliveries)
+    .where(
+      and(
+        eq(notificationDeliveries.outboxId, row.id),
+        eq(notificationDeliveries.channel, "email")
+      )
+    )
+    .limit(1);
+  if (existing?.status === "sent" || existing?.status === "delivered") return;
+
+  const deliveryId = existing?.id ?? (
     await db.insert(notificationDeliveries).values({
       notificationId: notificationId ?? null,
       outboxId: row.id,
       recipientUserId: row.recipientUserId,
       channel: "email",
-      provider: null,
+      provider: adapter.provider,
       status: "queued",
       nextAttemptAt: new Date(),
-    });
+    })
+  )[0].insertId;
+
+  if (!adapter.isConfigured()) {
+    await db
+      .update(notificationDeliveries)
+      .set({ provider: adapter.provider, status: "queued", nextAttemptAt: new Date() })
+      .where(eq(notificationDeliveries.id, deliveryId));
+    return;
   }
+
+  try {
+    const result = await adapter.send({
+      to: [{ email: recipient.email, name: recipient.name }],
+      subject: copy.title,
+      text: copy.body,
+      html: `<p>${escapeHtml(copy.body)}</p>${
+        typeof row.payload === "object" && row.payload && "actionUrl" in row.payload
+          ? `<p><a href="${escapeHtml(String((row.payload as Record<string, unknown>).actionUrl))}">View in KwantuHub</a></p>`
+          : ""
+      }`,
+      idempotencyKey: `${row.idempotencyKey}:email`,
+    });
+    await db
+      .update(notificationDeliveries)
+      .set({
+        provider: adapter.provider,
+        providerMessageId: result.providerMessageId,
+        status: "sent",
+        attempts: sql`${notificationDeliveries.attempts} + 1`,
+        lastAttemptAt: new Date(),
+        sentAt: new Date(),
+        failureCode: null,
+        failureReason: null,
+      })
+      .where(eq(notificationDeliveries.id, deliveryId));
+  } catch (error) {
+    await db
+      .update(notificationDeliveries)
+      .set({
+        provider: adapter.provider,
+        status: "failed",
+        attempts: sql`${notificationDeliveries.attempts} + 1`,
+        lastAttemptAt: new Date(),
+        failureReason: error instanceof Error ? error.message : String(error),
+      })
+      .where(eq(notificationDeliveries.id, deliveryId));
+    throw error;
+  }
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, character => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[character];
+  });
 }
 
 export async function processNotificationOutboxBatch(
   db: NotificationDatabase,
-  options: { limit?: number; now?: Date } = {}
+  options: {
+    limit?: number;
+    now?: Date;
+    emailAdapter?: SendPulseTransactionalEmailAdapter;
+  } = {}
 ) {
   const now = options.now ?? new Date();
   const limit = Math.max(1, Math.min(options.limit ?? 10, 50));
@@ -241,7 +344,7 @@ export async function processNotificationOutboxBatch(
 
     const attempt = candidate.attempts + 1;
     try {
-      await processOutboxRow(db, candidate);
+      await processOutboxRow(db, candidate, options.emailAdapter);
       await db
         .update(notificationOutbox)
         .set({ status: "completed", processedAt: new Date(), lockedAt: null })
@@ -270,8 +373,12 @@ export function startNotificationOutboxWorker(
   options: { intervalMs?: number; batchSize?: number } = {}
 ) {
   const intervalMs = Math.max(options.intervalMs ?? 15_000, 5_000);
+  const emailAdapter = new SendPulseTransactionalEmailAdapter();
   const timer = setInterval(() => {
-    void processNotificationOutboxBatch(db, { limit: options.batchSize ?? 10 });
+    void processNotificationOutboxBatch(db, {
+      limit: options.batchSize ?? 10,
+      emailAdapter,
+    });
   }, intervalMs);
   timer.unref?.();
   return () => clearInterval(timer);

@@ -38,6 +38,8 @@
 - [x] Add idempotent inquiry notification event enqueueing for create, reply, and resolution flows.
 - [x] Add retry-safe outbox worker with in-app fan-out and queued email delivery records.
 - [x] Document notification procedures in Swagger/OpenAPI and add worker policy tests.
+- [x] Integrate the server-only SendPulse adapter with OAuth/API-key auth, token caching, timeouts, and provider delivery status updates.
+- [x] Add SendPulse payload/configuration tests without issuing live email sends.
 
 ## Verification
 

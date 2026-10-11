@@ -28,6 +28,13 @@
 - [x] Document new inquiry reply/resolution procedures in Swagger/OpenAPI.
 - [x] Add unit coverage for inquiry status policy.
 
+## Stage 3A — Notifications
+
+- [x] Add notification preferences, in-app notifications, outbox, and delivery tables.
+- [x] Generate and apply Drizzle migration `0005_dashing_sir_ram.sql`.
+- [x] Verify the four notification tables and indexes in the managed database.
+- [x] Pass type check, 9 unit tests, production build, and diff validation.
+
 ## Verification
 
 - [x] `pnpm run check`

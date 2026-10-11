@@ -2,6 +2,7 @@ import {
   boolean,
   int,
   json,
+  index,
   mysqlEnum,
   mysqlTable,
   text,
@@ -270,6 +271,193 @@ export const moderationRecords = mysqlTable("moderationRecords", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const notificationPreferences = mysqlTable(
+  "notificationPreferences",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .unique()
+      .references(() => users.id, { onDelete: "cascade" }),
+    inAppEnabled: boolean("inAppEnabled").default(true).notNull(),
+    emailInquiries: boolean("emailInquiries").default(true).notNull(),
+    emailReplies: boolean("emailReplies").default(true).notNull(),
+    emailResolutions: boolean("emailResolutions").default(false).notNull(),
+    emailAccount: boolean("emailAccount").default(true).notNull(),
+    quietHoursStart: varchar("quietHoursStart", { length: 5 }),
+    quietHoursEnd: varchar("quietHoursEnd", { length: 5 }),
+    timezone: varchar("timezone", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  }
+);
+
+export const notifications = mysqlTable(
+  "notifications",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    recipientUserId: int("recipientUserId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    actorUserId: int("actorUserId").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    notificationType: mysqlEnum("notificationType", [
+      "inquiry_created",
+      "inquiry_reply_received",
+      "inquiry_resolved",
+      "vendor_approved",
+      "vendor_rejected",
+      "review_moderated",
+    ]).notNull(),
+    entityType: varchar("entityType", { length: 64 }).notNull(),
+    entityId: int("entityId"),
+    inquiryId: int("inquiryId").references(() => inquiries.id, {
+      onDelete: "cascade",
+    }),
+    listingId: int("listingId").references(() => listings.id, {
+      onDelete: "set null",
+    }),
+    title: varchar("title", { length: 180 }).notNull(),
+    body: varchar("body", { length: 500 }).notNull(),
+    actionUrl: varchar("actionUrl", { length: 512 }),
+    metadata: json("metadata"),
+    readAt: timestamp("readAt"),
+    expiresAt: timestamp("expiresAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("notification_recipient_read_created_idx").on(
+      table.recipientUserId,
+      table.readAt,
+      table.createdAt
+    ),
+    index("notification_recipient_created_idx").on(
+      table.recipientUserId,
+      table.createdAt
+    ),
+    index("notification_type_created_idx").on(
+      table.notificationType,
+      table.createdAt
+    ),
+    index("notification_entity_idx").on(table.entityType, table.entityId),
+    index("notification_inquiry_recipient_idx").on(
+      table.inquiryId,
+      table.recipientUserId
+    ),
+  ]
+);
+
+export const notificationOutbox = mysqlTable(
+  "notificationOutbox",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    idempotencyKey: varchar("idempotencyKey", { length: 180 })
+      .notNull()
+      .unique(),
+    eventType: varchar("eventType", { length: 80 }).notNull(),
+    recipientUserId: int("recipientUserId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    actorUserId: int("actorUserId").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    entityType: varchar("entityType", { length: 64 }).notNull(),
+    entityId: int("entityId").notNull(),
+    payload: json("payload").notNull(),
+    status: mysqlEnum("status", [
+      "queued",
+      "processing",
+      "completed",
+      "failed",
+      "dead",
+    ])
+      .default("queued")
+      .notNull(),
+    attempts: int("attempts").default(0).notNull(),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    lockedAt: timestamp("lockedAt"),
+    processedAt: timestamp("processedAt"),
+    lastError: text("lastError"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("notification_outbox_status_available_idx").on(
+      table.status,
+      table.availableAt
+    ),
+    index("notification_outbox_recipient_created_idx").on(
+      table.recipientUserId,
+      table.createdAt
+    ),
+    index("notification_outbox_event_entity_idx").on(
+      table.eventType,
+      table.entityType,
+      table.entityId
+    ),
+  ]
+);
+
+export const notificationDeliveries = mysqlTable(
+  "notificationDeliveries",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    notificationId: int("notificationId").references(() => notifications.id, {
+      onDelete: "cascade",
+    }),
+    outboxId: int("outboxId").references(() => notificationOutbox.id, {
+      onDelete: "cascade",
+    }),
+    recipientUserId: int("recipientUserId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    channel: mysqlEnum("channel", ["in_app", "email"]).notNull(),
+    provider: varchar("provider", { length: 64 }),
+    providerMessageId: varchar("providerMessageId", { length: 255 }),
+    status: mysqlEnum("status", [
+      "queued",
+      "sent",
+      "delivered",
+      "failed",
+      "bounced",
+      "complained",
+    ])
+      .default("queued")
+      .notNull(),
+    attempts: int("attempts").default(0).notNull(),
+    lastAttemptAt: timestamp("lastAttemptAt"),
+    nextAttemptAt: timestamp("nextAttemptAt"),
+    sentAt: timestamp("sentAt"),
+    deliveredAt: timestamp("deliveredAt"),
+    failureCode: varchar("failureCode", { length: 120 }),
+    failureReason: text("failureReason"),
+    providerPayload: json("providerPayload"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("notification_delivery_provider_message_idx").on(
+      table.provider,
+      table.providerMessageId
+    ),
+    index("notification_delivery_recipient_channel_status_idx").on(
+      table.recipientUserId,
+      table.channel,
+      table.status,
+      table.createdAt
+    ),
+    index("notification_delivery_status_retry_idx").on(
+      table.status,
+      table.nextAttemptAt
+    ),
+    index("notification_delivery_outbox_channel_idx").on(
+      table.outboxId,
+      table.channel
+    ),
+  ]
+);
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type Category = typeof categories.$inferSelect;
@@ -292,3 +480,11 @@ export type Review = typeof reviews.$inferSelect;
 export type InsertReview = typeof reviews.$inferInsert;
 export type Dispute = typeof disputes.$inferSelect;
 export type InsertDispute = typeof disputes.$inferInsert;
+export type NotificationPreference = typeof notificationPreferences.$inferSelect;
+export type InsertNotificationPreference = typeof notificationPreferences.$inferInsert;
+export type Notification = typeof notifications.$inferSelect;
+export type InsertNotification = typeof notifications.$inferInsert;
+export type NotificationOutbox = typeof notificationOutbox.$inferSelect;
+export type InsertNotificationOutbox = typeof notificationOutbox.$inferInsert;
+export type NotificationDelivery = typeof notificationDeliveries.$inferSelect;
+export type InsertNotificationDelivery = typeof notificationDeliveries.$inferInsert;

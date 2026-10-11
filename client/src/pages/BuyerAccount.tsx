@@ -47,6 +47,9 @@ export default function BuyerAccount() {
       utils.buyer.inquiries.invalidate();
     },
   });
+  const markInquiryRead = trpc.buyer.markInquiryRead.useMutation({
+    onSuccess: () => utils.buyer.inquiries.invalidate(),
+  });
   const closeInquiry = trpc.buyer.closeInquiry.useMutation({
     onSuccess: () => utils.buyer.inquiries.invalidate(),
   });
@@ -110,6 +113,11 @@ export default function BuyerAccount() {
             }`}
           >
             Conversations ({inquiries?.length || 0})
+            {(inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0) || 0) > 0 && (
+              <span className="ml-2 rounded-full bg-[#d71466] px-2 py-0.5 text-[10px] text-white">
+                {inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0)} new
+              </span>
+            )}
           </button>
           <button
             onClick={() => setActiveTab("wishlist")}
@@ -197,13 +205,20 @@ export default function BuyerAccount() {
                         Regarding: {inq.listing.title}
                       </Link>
                     </div>
-                    <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded ${
-                      inq.status === "open"
-                        ? "bg-[#ecfdf5] text-[#065f46]"
-                        : "bg-[#f3f4f6] text-[#4b5563]"
-                    }`}>
-                      {inq.status}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {inq.unreadCount > 0 && (
+                        <span className="rounded-full bg-[#d71466] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white">
+                          {inq.unreadCount} unread
+                        </span>
+                      )}
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded ${
+                        inq.status === "open"
+                          ? "bg-[#ecfdf5] text-[#065f46]"
+                          : "bg-[#f3f4f6] text-[#4b5563]"
+                      }`}>
+                        {inq.status}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="space-y-3 pl-2">
@@ -225,6 +240,16 @@ export default function BuyerAccount() {
                       </div>
                     ))}
                   </div>
+                  {inq.unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => markInquiryRead.mutate({ inquiryId: inq.id })}
+                      disabled={markInquiryRead.isPending}
+                      className="mt-3 text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline"
+                    >
+                      Mark messages read
+                    </button>
+                  )}
                   {inq.status === "open" && (
                     <div className="mt-5 pt-4 border-t border-[#eee8df] space-y-3">
                       <div className="flex flex-col sm:flex-row gap-3">

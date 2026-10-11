@@ -23,7 +23,8 @@
 
 - [x] Add bidirectional buyer/vendor replies with server-side ownership checks.
 - [x] Add buyer/vendor inquiry resolution controls and closed-conversation reply protection.
-- [x] Add buyer and vendor portal controls for replies and resolution status.
+- [x] Add buyer/vendor portal controls for replies and resolution status.
+- [x] Add participant-scoped unread counts, mark-read mutations, and buyer/vendor portal unread indicators.
 - [x] Document new inquiry reply/resolution procedures in Swagger/OpenAPI.
 - [x] Add unit coverage for inquiry status policy.
 

@@ -76,6 +76,9 @@ export default function VendorPortal() {
       utils.vendor.inquiries.invalidate();
     },
   });
+  const markInquiryRead = trpc.vendor.markInquiryRead.useMutation({
+    onSuccess: () => utils.vendor.inquiries.invalidate(),
+  });
   const closeInquiryMutation = trpc.vendor.closeInquiry.useMutation({
     onSuccess: () => utils.vendor.inquiries.invalidate(),
   });
@@ -214,6 +217,11 @@ export default function VendorPortal() {
             }`}
           >
             Buyer Inquiries ({inquiries?.length || 0})
+            {(inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0) || 0) > 0 && (
+              <span className="ml-2 rounded-full bg-[#d71466] px-2 py-0.5 text-[10px] text-white">
+                {inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0)} new
+              </span>
+            )}
           </button>
           <button
             onClick={() => setActiveTab("analytics")}
@@ -436,13 +444,20 @@ export default function VendorPortal() {
                         Regarding: {inq.listing.title}
                       </span>
                     </div>
-                    <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded ${
-                      inq.status === "open"
-                        ? "bg-[#ecfdf5] text-[#065f46]"
-                        : "bg-[#f3f4f6] text-[#4b5563]"
-                    }`}>
-                      {inq.status}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {inq.unreadCount > 0 && (
+                        <span className="rounded-full bg-[#d71466] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white">
+                          {inq.unreadCount} unread
+                        </span>
+                      )}
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded ${
+                        inq.status === "open"
+                          ? "bg-[#ecfdf5] text-[#065f46]"
+                          : "bg-[#f3f4f6] text-[#4b5563]"
+                      }`}>
+                        {inq.status}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="space-y-3 mb-6">
@@ -464,6 +479,17 @@ export default function VendorPortal() {
                       </div>
                     ))}
                   </div>
+
+                  {inq.unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => markInquiryRead.mutate({ inquiryId: inq.id })}
+                      disabled={markInquiryRead.isPending}
+                      className="mb-3 text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline"
+                    >
+                      Mark messages read
+                    </button>
+                  )}
 
                   {inq.status === "open" && (
                     <div className="space-y-3">

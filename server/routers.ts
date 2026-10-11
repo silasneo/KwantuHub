@@ -42,7 +42,7 @@ import {
   disputes,
   wishlists,
 } from "../drizzle/schema";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import {
   clearAuthCookie,
   hashPassword,
@@ -51,7 +51,7 @@ import {
   signToken,
   verifyPassword,
 } from "./jwtAuth";
-import { isInquiryOpen } from "./inquiryWorkflow";
+import { countUnreadMessages, isInquiryOpen } from "./inquiryWorkflow";
 
 const contactRevealAttempts = new Map<string, number[]>();
 const CONTACT_REVEAL_WINDOW_MS = 60_000;
@@ -552,7 +552,13 @@ export const appRouter = router({
             .from(messages)
             .where(eq(messages.inquiryId, inquiry.id))
             .orderBy(messages.createdAt);
-          return { ...inquiry, listing, vendor, messages: msgs };
+          return {
+            ...inquiry,
+            listing,
+            vendor,
+            messages: msgs,
+            unreadCount: countUnreadMessages(msgs, ctx.user.id),
+          };
         })
       );
     }),
@@ -602,6 +608,30 @@ export const appRouter = router({
         });
 
         return { id: inqRes.insertId, success: true };
+      }),
+
+    markInquiryRead: protectedProcedure
+      .input(z.object({ inquiryId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [inquiry] = await db
+          .select({ id: inquiries.id })
+          .from(inquiries)
+          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id)))
+          .limit(1);
+        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        await db
+          .update(messages)
+          .set({ readAt: new Date() })
+          .where(
+            and(
+              eq(messages.inquiryId, inquiry.id),
+              ne(messages.senderId, ctx.user.id),
+              isNull(messages.readAt)
+            )
+          );
+        return { success: true };
       }),
 
     replyInquiry: protectedProcedure
@@ -892,10 +922,42 @@ export const appRouter = router({
             .from(messages)
             .where(eq(messages.inquiryId, inquiry.id))
             .orderBy(messages.createdAt);
-          return { ...inquiry, listing, buyer, messages: msgs };
+          return {
+            ...inquiry,
+            listing,
+            buyer,
+            messages: msgs,
+            unreadCount: countUnreadMessages(msgs, ctx.user.id),
+          };
         })
       );
     }),
+
+    markInquiryRead: protectedProcedure
+      .input(z.object({ inquiryId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const profile = await getVendorProfileByUserId(ctx.user.id);
+        if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
+        const [inquiry] = await db
+          .select({ id: inquiries.id })
+          .from(inquiries)
+          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.vendorId, profile.id)))
+          .limit(1);
+        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        await db
+          .update(messages)
+          .set({ readAt: new Date() })
+          .where(
+            and(
+              eq(messages.inquiryId, inquiry.id),
+              ne(messages.senderId, ctx.user.id),
+              isNull(messages.readAt)
+            )
+          );
+        return { success: true };
+      }),
 
     replyInquiry: protectedProcedure
       .input(

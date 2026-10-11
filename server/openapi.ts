@@ -379,6 +379,67 @@ export const openapiDocument = {
         },
       },
     },
+    "/api/trpc/buyer.markInquiryRead": {
+      post: {
+        tags: ["Buyer"],
+        summary: "Mark messages in the buyer's inquiry as read",
+        security: [{ KwantuJwtCookie: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/TrpcMutationInput" },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Messages marked read", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+          "404": { description: "Inquiry not found or not owned by buyer" },
+        },
+      },
+    },
+    "/api/trpc/buyer.replyInquiry": {
+      post: {
+        tags: ["Buyer"],
+        summary: "Reply to the buyer's own open inquiry",
+        security: [{ KwantuJwtCookie: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/TrpcMutationInput" },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Reply created", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "400": { description: "Inquiry is resolved" },
+          "401": { description: "Authentication required" },
+          "404": { description: "Inquiry not found or not owned by buyer" },
+        },
+      },
+    },
+    "/api/trpc/buyer.closeInquiry": {
+      post: {
+        tags: ["Buyer"],
+        summary: "Mark the buyer's own inquiry as resolved",
+        security: [{ KwantuJwtCookie: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/TrpcMutationInput" },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Inquiry resolved", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+          "404": { description: "Inquiry not found or not owned by buyer" },
+        },
+      },
+    },
     "/api/trpc/vendor.getProfile": {
       get: {
         tags: ["Vendor Portal"],
@@ -512,6 +573,48 @@ export const openapiDocument = {
             },
           },
           "401": { description: "Authentication required" },
+        },
+      },
+    },
+    "/api/trpc/vendor.markInquiryRead": {
+      post: {
+        tags: ["Vendor Portal"],
+        summary: "Mark messages in a vendor-owned inquiry as read",
+        security: [{ KwantuJwtCookie: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/TrpcMutationInput" },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Messages marked read", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+          "403": { description: "Vendor profile required" },
+          "404": { description: "Inquiry not found or not owned by vendor" },
+        },
+      },
+    },
+    "/api/trpc/vendor.closeInquiry": {
+      post: {
+        tags: ["Vendor Portal"],
+        summary: "Mark a vendor-owned inquiry as resolved",
+        security: [{ KwantuJwtCookie: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/TrpcMutationInput" },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Inquiry resolved", content: { "application/json": { schema: { $ref: "#/components/schemas/TrpcResult" } } } },
+          "401": { description: "Authentication required" },
+          "403": { description: "Vendor profile required" },
+          "404": { description: "Inquiry not found or not owned by vendor" },
         },
       },
     },

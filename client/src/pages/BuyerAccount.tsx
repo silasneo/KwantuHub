@@ -7,13 +7,14 @@ import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
 export default function BuyerAccount() {
   const { user, isAuthenticated } = useAuth();
   const [activeTab, setActiveTab] = useState<
-    "wishlist" | "inquiries" | "settings"
+    "wishlist" | "inquiries" | "history" | "reviews" | "settings"
   >("inquiries");
   const [emailInquiries, setEmailInquiries] = useState(true);
   const [emailReplies, setEmailReplies] = useState(true);
   const [productUpdates, setProductUpdates] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [replyText, setReplyText] = useState<Record<number, string>>({});
 
   const { data: wishlist, isLoading: loadingWishlist } =
     trpc.buyer.wishlist.useQuery(undefined, {
@@ -25,9 +26,32 @@ export default function BuyerAccount() {
       enabled: isAuthenticated,
     });
 
+  const { data: viewHistory, isLoading: loadingHistory } =
+    trpc.buyer.viewHistory.useQuery(undefined, { enabled: isAuthenticated });
+  const { data: submittedReviews, isLoading: loadingReviews } =
+    trpc.buyer.reviews.useQuery(undefined, { enabled: isAuthenticated });
+
   const utils = trpc.useUtils();
   const toggleWishlist = trpc.buyer.toggleWishlist.useMutation({
     onSuccess: () => utils.buyer.wishlist.invalidate(),
+  });
+  const removeView = trpc.buyer.removeViewHistory.useMutation({
+    onSuccess: () => utils.buyer.viewHistory.invalidate(),
+  });
+  const clearViews = trpc.buyer.clearViewHistory.useMutation({
+    onSuccess: () => utils.buyer.viewHistory.invalidate(),
+  });
+  const replyInquiry = trpc.buyer.replyInquiry.useMutation({
+    onSuccess: (_, vars) => {
+      setReplyText(prev => ({ ...prev, [vars.inquiryId]: "" }));
+      utils.buyer.inquiries.invalidate();
+    },
+  });
+  const markInquiryRead = trpc.buyer.markInquiryRead.useMutation({
+    onSuccess: () => utils.buyer.inquiries.invalidate(),
+  });
+  const closeInquiry = trpc.buyer.closeInquiry.useMutation({
+    onSuccess: () => utils.buyer.inquiries.invalidate(),
   });
   const updateProfile = trpc.auth.updateProfile.useMutation();
   const changePassword = trpc.auth.changePassword.useMutation({
@@ -89,6 +113,11 @@ export default function BuyerAccount() {
             }`}
           >
             Conversations ({inquiries?.length || 0})
+            {(inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0) || 0) > 0 && (
+              <span className="ml-2 rounded-full bg-[#d71466] px-2 py-0.5 text-[10px] text-white">
+                {inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0)} new
+              </span>
+            )}
           </button>
           <button
             onClick={() => setActiveTab("wishlist")}
@@ -99,6 +128,26 @@ export default function BuyerAccount() {
             }`}
           >
             Saved Items ({wishlist?.length || 0})
+          </button>
+          <button
+            onClick={() => setActiveTab("history")}
+            className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
+              activeTab === "history"
+                ? "border-[#d71466] text-[#d71466]"
+                : "border-transparent text-[#68635c] hover:text-[#0a0a0a]"
+            }`}
+          >
+            Recently Viewed ({viewHistory?.length || 0})
+          </button>
+          <button
+            onClick={() => setActiveTab("reviews")}
+            className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
+              activeTab === "reviews"
+                ? "border-[#d71466] text-[#d71466]"
+                : "border-transparent text-[#68635c] hover:text-[#0a0a0a]"
+            }`}
+          >
+            My Reviews ({submittedReviews?.length || 0})
           </button>
           <button
             onClick={() => setActiveTab("settings")}
@@ -156,9 +205,20 @@ export default function BuyerAccount() {
                         Regarding: {inq.listing.title}
                       </Link>
                     </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider bg-[#ecfdf5] text-[#065f46] px-2.5 py-1 rounded">
-                      {inq.status}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {inq.unreadCount > 0 && (
+                        <span className="rounded-full bg-[#d71466] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white">
+                          {inq.unreadCount} unread
+                        </span>
+                      )}
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded ${
+                        inq.status === "open"
+                          ? "bg-[#ecfdf5] text-[#065f46]"
+                          : "bg-[#f3f4f6] text-[#4b5563]"
+                      }`}>
+                        {inq.status}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="space-y-3 pl-2">
@@ -180,6 +240,45 @@ export default function BuyerAccount() {
                       </div>
                     ))}
                   </div>
+                  {inq.unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => markInquiryRead.mutate({ inquiryId: inq.id })}
+                      disabled={markInquiryRead.isPending}
+                      className="mt-3 text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline"
+                    >
+                      Mark messages read
+                    </button>
+                  )}
+                  {inq.status === "open" && (
+                    <div className="mt-5 pt-4 border-t border-[#eee8df] space-y-3">
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <input
+                          type="text"
+                          value={replyText[inq.id] || ""}
+                          onChange={e => setReplyText(prev => ({ ...prev, [inq.id]: e.target.value }))}
+                          placeholder="Reply to the vendor..."
+                          className="flex-1 text-sm border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => replyInquiry.mutate({ inquiryId: inq.id, message: replyText[inq.id] || "" })}
+                          disabled={replyInquiry.isPending || !replyText[inq.id]?.trim()}
+                          className="text-xs font-bold uppercase tracking-wider text-white brand-gradient px-5 py-2 rounded disabled:opacity-50"
+                        >
+                          Send Reply
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => closeInquiry.mutate({ inquiryId: inq.id })}
+                        disabled={closeInquiry.isPending}
+                        className="text-xs font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466]"
+                      >
+                        Mark conversation resolved
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))
             )}
@@ -248,6 +347,80 @@ export default function BuyerAccount() {
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === "history" && (
+          <section>
+            <div className="flex items-end justify-between gap-4 mb-5">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-[#fe8129]">Your trail</p>
+                <h2 className="font-serif text-3xl font-bold text-[#0a0a0a]">Recently viewed</h2>
+              </div>
+              {(viewHistory?.length || 0) > 0 && (
+                <button
+                  type="button"
+                  onClick={() => clearViews.mutate()}
+                  className="text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline"
+                >
+                  Clear history
+                </button>
+              )}
+            </div>
+            {loadingHistory ? (
+              <div className="text-center py-12 font-serif text-[#68635c]">Loading view history...</div>
+            ) : (viewHistory?.length || 0) === 0 ? (
+              <div className="bg-white border border-[#d9d0c4] p-12 rounded text-center font-serif text-[#68635c]">
+                Listings you open will appear here for easy return visits.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+                {viewHistory?.map(({ listing, viewedAt }) => (
+                  <article key={`${listing.id}-${viewedAt}`} className="bg-white border border-[#d9d0c4] rounded overflow-hidden">
+                    {listing.media?.[0]?.url ? (
+                      <img src={listing.media[0].url} alt={listing.title} className="w-full h-40 object-cover" />
+                    ) : <div className="h-40 brand-gradient" />}
+                    <div className="p-5">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-[#d71466]">{listing.category.name}</p>
+                      <h3 className="font-serif font-bold text-xl text-[#0a0a0a] mt-1">{listing.title}</h3>
+                      <p className="text-xs text-[#68635c] mt-2">Viewed {new Date(viewedAt).toLocaleDateString()}</p>
+                      <div className="flex items-center justify-between mt-4">
+                        <Link href={`/listings/${listing.slug}`} className="text-xs font-bold uppercase tracking-wider text-[#d71466]">View again →</Link>
+                        <button type="button" onClick={() => removeView.mutate({ listingId: listing.id })} className="text-xs text-[#68635c] hover:text-red-600">Remove</button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "reviews" && (
+          <section>
+            <p className="text-xs font-bold uppercase tracking-widest text-[#fe8129]">Your voice</p>
+            <h2 className="font-serif text-3xl font-bold text-[#0a0a0a] mb-5">My reviews</h2>
+            {loadingReviews ? (
+              <div className="text-center py-12 font-serif text-[#68635c]">Loading reviews...</div>
+            ) : (submittedReviews?.length || 0) === 0 ? (
+              <div className="bg-white border border-[#d9d0c4] p-12 rounded text-center font-serif text-[#68635c]">Reviews you submit will appear here.</div>
+            ) : (
+              <div className="space-y-4">
+                {submittedReviews?.map(({ review, listing, vendor }) => (
+                  <article key={review.id} className="bg-white border border-[#d9d0c4] p-6 rounded">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <Link href={`/listings/${listing.slug}`} className="font-serif text-xl font-bold text-[#0a0a0a] hover:text-[#d71466]">{listing.title}</Link>
+                        <p className="text-xs text-[#68635c]">{vendor.businessName}</p>
+                      </div>
+                      <span className="text-[#d71466]">{"★".repeat(review.rating)}</span>
+                    </div>
+                    <p className="font-serif text-[#333] mt-3">{review.comment || "No written feedback."}</p>
+                    <p className="text-[10px] uppercase tracking-wider text-[#888] mt-3">{review.status}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         )}
 
         {activeTab === "settings" && (

@@ -76,6 +76,12 @@ export default function VendorPortal() {
       utils.vendor.inquiries.invalidate();
     },
   });
+  const markInquiryRead = trpc.vendor.markInquiryRead.useMutation({
+    onSuccess: () => utils.vendor.inquiries.invalidate(),
+  });
+  const closeInquiryMutation = trpc.vendor.closeInquiry.useMutation({
+    onSuccess: () => utils.vendor.inquiries.invalidate(),
+  });
 
   const saveProfileMutation = trpc.vendor.saveProfile.useMutation({
     onSuccess: () => utils.vendor.getProfile.invalidate(),
@@ -211,6 +217,11 @@ export default function VendorPortal() {
             }`}
           >
             Buyer Inquiries ({inquiries?.length || 0})
+            {(inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0) || 0) > 0 && (
+              <span className="ml-2 rounded-full bg-[#d71466] px-2 py-0.5 text-[10px] text-white">
+                {inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0)} new
+              </span>
+            )}
           </button>
           <button
             onClick={() => setActiveTab("analytics")}
@@ -433,6 +444,20 @@ export default function VendorPortal() {
                         Regarding: {inq.listing.title}
                       </span>
                     </div>
+                    <div className="flex items-center gap-2">
+                      {inq.unreadCount > 0 && (
+                        <span className="rounded-full bg-[#d71466] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white">
+                          {inq.unreadCount} unread
+                        </span>
+                      )}
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded ${
+                        inq.status === "open"
+                          ? "bg-[#ecfdf5] text-[#065f46]"
+                          : "bg-[#f3f4f6] text-[#4b5563]"
+                      }`}>
+                        {inq.status}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="space-y-3 mb-6">
@@ -455,32 +480,46 @@ export default function VendorPortal() {
                     ))}
                   </div>
 
-                  {/* Reply Input */}
-                  <div className="flex gap-3">
-                    <input
-                      type="text"
-                      value={replyText[inq.id] || ""}
-                      onChange={e =>
-                        setReplyText({ ...replyText, [inq.id]: e.target.value })
-                      }
-                      placeholder="Write your reply to the buyer..."
-                      className="flex-1 text-sm border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0]"
-                    />
+                  {inq.unreadCount > 0 && (
                     <button
-                      onClick={() => {
-                        const msg = replyText[inq.id];
-                        if (!msg) return;
-                        replyMutation.mutate({
-                          inquiryId: inq.id,
-                          message: msg,
-                        });
-                      }}
-                      disabled={replyMutation.isPending || !replyText[inq.id]}
-                      className="text-xs font-bold uppercase tracking-wider text-white brand-gradient px-6 py-2 rounded cursor-pointer disabled:opacity-50"
+                      type="button"
+                      onClick={() => markInquiryRead.mutate({ inquiryId: inq.id })}
+                      disabled={markInquiryRead.isPending}
+                      className="mb-3 text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline"
                     >
-                      Send Reply
+                      Mark messages read
                     </button>
-                  </div>
+                  )}
+
+                  {inq.status === "open" && (
+                    <div className="space-y-3">
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <input
+                          type="text"
+                          value={replyText[inq.id] || ""}
+                          onChange={e => setReplyText(prev => ({ ...prev, [inq.id]: e.target.value }))}
+                          placeholder="Write your reply to the buyer..."
+                          className="flex-1 text-sm border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => replyMutation.mutate({ inquiryId: inq.id, message: replyText[inq.id] || "" })}
+                          disabled={replyMutation.isPending || !replyText[inq.id]?.trim()}
+                          className="text-xs font-bold uppercase tracking-wider text-white brand-gradient px-6 py-2 rounded cursor-pointer disabled:opacity-50"
+                        >
+                          Send Reply
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => closeInquiryMutation.mutate({ inquiryId: inq.id })}
+                        disabled={closeInquiryMutation.isPending}
+                        className="text-xs font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466]"
+                      >
+                        Mark conversation resolved
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))
             )}

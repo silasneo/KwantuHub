@@ -11,6 +11,11 @@ import {
   getFeatureFlags,
   getDb,
   getListingBySlug,
+  getViewHistory,
+  removeViewHistoryItem,
+  clearViewHistory,
+  getBuyerReviews,
+  getListingReviews,
   getRelatedListings,
   getStorefrontBySlug,
   getUserByEmail,
@@ -37,7 +42,7 @@ import {
   disputes,
   wishlists,
 } from "../drizzle/schema";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import {
   clearAuthCookie,
   hashPassword,
@@ -46,6 +51,7 @@ import {
   signToken,
   verifyPassword,
 } from "./jwtAuth";
+import { countUnreadMessages, isInquiryOpen } from "./inquiryWorkflow";
 
 const contactRevealAttempts = new Map<string, number[]>();
 const CONTACT_REVEAL_WINDOW_MS = 60_000;
@@ -298,8 +304,8 @@ export const appRouter = router({
 
     getListing: publicProcedure
       .input(z.object({ slug: z.string() }))
-      .query(async ({ input }) => {
-        const item = await getListingBySlug(input.slug);
+      .query(async ({ ctx, input }) => {
+        const item = await getListingBySlug(input.slug, ctx.user?.id);
         if (!item)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -307,6 +313,10 @@ export const appRouter = router({
           });
         return item;
       }),
+
+    reviews: publicProcedure
+      .input(z.object({ listingId: z.number().int().positive() }))
+      .query(async ({ input }) => getListingReviews(input.listingId)),
 
     revealContact: publicProcedure
       .input(
@@ -457,6 +467,69 @@ export const appRouter = router({
         }
       }),
 
+    viewHistory: protectedProcedure.query(async ({ ctx }) =>
+      getViewHistory(ctx.user.id)
+    ),
+
+    removeViewHistory: protectedProcedure
+      .input(z.object({ listingId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        await removeViewHistoryItem(ctx.user.id, input.listingId);
+        return { success: true };
+      }),
+
+    clearViewHistory: protectedProcedure.mutation(async ({ ctx }) => {
+      await clearViewHistory(ctx.user.id);
+      return { success: true };
+    }),
+
+    reviews: protectedProcedure.query(async ({ ctx }) => getBuyerReviews(ctx.user.id)),
+
+    submitReview: protectedProcedure
+      .input(
+        z.object({
+          listingId: z.number().int().positive(),
+          rating: z.number().int().min(1).max(5),
+          comment: z.string().trim().min(2).max(2000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [listing] = await db
+          .select({ id: listings.id, vendorId: listings.vendorId, status: listings.status })
+          .from(listings)
+          .where(eq(listings.id, input.listingId))
+          .limit(1);
+        if (!listing || listing.status !== "published") {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Listing not found" });
+        }
+        const existing = await db
+          .select({ id: reviews.id })
+          .from(reviews)
+          .where(and(eq(reviews.listingId, input.listingId), eq(reviews.buyerId, ctx.user.id)))
+          .limit(1);
+        if (existing.length) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You have already reviewed this listing" });
+        }
+        const [created] = await db.insert(reviews).values({
+          listingId: listing.id,
+          vendorId: listing.vendorId,
+          buyerId: ctx.user.id,
+          rating: input.rating,
+          comment: input.comment || null,
+          status: "pending",
+        });
+        await recordAnalyticsEvent({
+          eventType: "submit_review",
+          userId: ctx.user.id,
+          vendorId: listing.vendorId,
+          listingId: listing.id,
+          metadata: { rating: input.rating },
+        });
+        return { reviewId: created.insertId, status: "pending" as const };
+      }),
+
     inquiries: protectedProcedure.query(async ({ ctx }) => {
       const db = await getDb();
       if (!db) return [];
@@ -479,7 +552,13 @@ export const appRouter = router({
             .from(messages)
             .where(eq(messages.inquiryId, inquiry.id))
             .orderBy(messages.createdAt);
-          return { ...inquiry, listing, vendor, messages: msgs };
+          return {
+            ...inquiry,
+            listing,
+            vendor,
+            messages: msgs,
+            unreadCount: countUnreadMessages(msgs, ctx.user.id),
+          };
         })
       );
     }),
@@ -529,6 +608,77 @@ export const appRouter = router({
         });
 
         return { id: inqRes.insertId, success: true };
+      }),
+
+    markInquiryRead: protectedProcedure
+      .input(z.object({ inquiryId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [inquiry] = await db
+          .select({ id: inquiries.id })
+          .from(inquiries)
+          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id)))
+          .limit(1);
+        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        await db
+          .update(messages)
+          .set({ readAt: new Date() })
+          .where(
+            and(
+              eq(messages.inquiryId, inquiry.id),
+              ne(messages.senderId, ctx.user.id),
+              isNull(messages.readAt)
+            )
+          );
+        return { success: true };
+      }),
+
+    replyInquiry: protectedProcedure
+      .input(
+        z.object({
+          inquiryId: z.number().int().positive(),
+          message: z.string().trim().min(2).max(4000),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const [inquiry] = await db
+          .select()
+          .from(inquiries)
+          .where(
+            and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id))
+          )
+          .limit(1);
+        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        if (!isInquiryOpen(inquiry.status)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "This inquiry is closed" });
+        }
+
+        const [msg] = await db.insert(messages).values({
+          inquiryId: inquiry.id,
+          senderId: ctx.user.id,
+          body: input.message,
+        });
+        await db.update(inquiries).set({ updatedAt: new Date() }).where(eq(inquiries.id, inquiry.id));
+        return { id: msg.insertId, success: true };
+      }),
+
+    closeInquiry: protectedProcedure
+      .input(z.object({ inquiryId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [updated] = await db
+          .update(inquiries)
+          .set({ status: "closed", updatedAt: new Date() })
+          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id)));
+        if (!updated || updated.affectedRows === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        }
+        return { success: true };
       }),
   }),
 
@@ -772,21 +922,67 @@ export const appRouter = router({
             .from(messages)
             .where(eq(messages.inquiryId, inquiry.id))
             .orderBy(messages.createdAt);
-          return { ...inquiry, listing, buyer, messages: msgs };
+          return {
+            ...inquiry,
+            listing,
+            buyer,
+            messages: msgs,
+            unreadCount: countUnreadMessages(msgs, ctx.user.id),
+          };
         })
       );
     }),
 
+    markInquiryRead: protectedProcedure
+      .input(z.object({ inquiryId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const profile = await getVendorProfileByUserId(ctx.user.id);
+        if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
+        const [inquiry] = await db
+          .select({ id: inquiries.id })
+          .from(inquiries)
+          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.vendorId, profile.id)))
+          .limit(1);
+        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        await db
+          .update(messages)
+          .set({ readAt: new Date() })
+          .where(
+            and(
+              eq(messages.inquiryId, inquiry.id),
+              ne(messages.senderId, ctx.user.id),
+              isNull(messages.readAt)
+            )
+          );
+        return { success: true };
+      }),
+
     replyInquiry: protectedProcedure
       .input(
         z.object({
-          inquiryId: z.number(),
-          message: z.string().min(1),
+          inquiryId: z.number().int().positive(),
+          message: z.string().trim().min(2).max(4000),
         })
       )
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const profile = await getVendorProfileByUserId(ctx.user.id);
+        if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
+        const [inquiry] = await db
+          .select()
+          .from(inquiries)
+          .where(
+            and(eq(inquiries.id, input.inquiryId), eq(inquiries.vendorId, profile.id))
+          )
+          .limit(1);
+        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        if (!isInquiryOpen(inquiry.status)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "This inquiry is closed" });
+        }
 
         const [msgRes] = await db.insert(messages).values({
           inquiryId: input.inquiryId,
@@ -800,6 +996,23 @@ export const appRouter = router({
           .where(eq(inquiries.id, input.inquiryId));
 
         return { id: msgRes.insertId, success: true };
+      }),
+
+    closeInquiry: protectedProcedure
+      .input(z.object({ inquiryId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const profile = await getVendorProfileByUserId(ctx.user.id);
+        if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
+        const [updated] = await db
+          .update(inquiries)
+          .set({ status: "closed", updatedAt: new Date() })
+          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.vendorId, profile.id)));
+        if (!updated || updated.affectedRows === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        }
+        return { success: true };
       }),
   }),
 

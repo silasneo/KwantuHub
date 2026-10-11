@@ -15,6 +15,8 @@ export default function ListingDetail() {
   const [inquiryMsg, setInquiryMsg] = useState("");
   const [showInquiryModal, setShowInquiryModal] = useState(false);
   const [submittedInquiry, setSubmittedInquiry] = useState(false);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState("");
 
   const utils = trpc.useUtils();
   const {
@@ -33,6 +35,12 @@ export default function ListingDetail() {
     { enabled: !!item?.id && !!item?.categoryId }
   );
 
+  const { data: reviewSummary, isLoading: loadingReviews } =
+    trpc.marketplace.reviews.useQuery(
+      { listingId: item?.id || 0 },
+      { enabled: !!item?.id }
+    );
+
   const createInquiryMutation = trpc.buyer.createInquiry.useMutation({
     onSuccess: () => {
       setSubmittedInquiry(true);
@@ -44,6 +52,13 @@ export default function ListingDetail() {
   const toggleWishlistMutation = trpc.buyer.toggleWishlist.useMutation({
     onSuccess: () => {
       utils.buyer.wishlist.invalidate();
+    },
+  });
+  const submitReviewMutation = trpc.buyer.submitReview.useMutation({
+    onSuccess: () => {
+      setReviewComment("");
+      utils.buyer.reviews.invalidate();
+      utils.marketplace.reviews.invalidate({ listingId: item?.id || 0 });
     },
   });
 
@@ -191,6 +206,62 @@ export default function ListingDetail() {
         </div>
 
         <ContactReveal listingId={item.id} />
+
+        <section className="mt-10 border-t border-[#d9d0c4] pt-10">
+          <div className="flex items-end justify-between gap-4 mb-6">
+            <div>
+              <p className="text-xs font-serif font-bold uppercase tracking-widest text-[#fe8129]">Community feedback</p>
+              <h2 className="text-3xl font-serif font-bold text-[#0a0a0a]">Ratings & reviews</h2>
+            </div>
+            <div className="text-right">
+              <strong className="text-2xl text-[#d71466]">{reviewSummary?.averageRating ? reviewSummary.averageRating.toFixed(1) : "—"}</strong>
+              <p className="text-xs text-[#68635c]">{reviewSummary?.reviewCount || 0} approved reviews</p>
+            </div>
+          </div>
+          {loadingReviews ? (
+            <p className="font-serif text-[#68635c]">Loading reviews…</p>
+          ) : (reviewSummary?.reviews.length || 0) === 0 ? (
+            <p className="bg-white border border-[#d9d0c4] rounded p-6 font-serif text-[#68635c]">Be the first buyer to share feedback on this offering.</p>
+          ) : (
+            <div className="space-y-4">
+              {reviewSummary?.reviews.map(({ review, buyer }) => (
+                <article key={review.id} className="bg-white border border-[#d9d0c4] rounded p-5">
+                  <div className="flex justify-between gap-4">
+                    <div>
+                      <p className="font-serif font-bold text-[#0a0a0a]">{buyer.name || "Community buyer"}</p>
+                      <p className="text-[10px] uppercase tracking-wider text-[#888]">{new Date(review.createdAt).toLocaleDateString()}</p>
+                    </div>
+                    <span className="text-[#d71466]">{"★".repeat(review.rating)}</span>
+                  </div>
+                  <p className="font-serif text-[#333] mt-3">{review.comment || "No written feedback."}</p>
+                </article>
+              ))}
+            </div>
+          )}
+          {isAuthenticated && (
+            <form
+              className="bg-white border border-[#d9d0c4] rounded p-6 mt-6"
+              onSubmit={event => {
+                event.preventDefault();
+                submitReviewMutation.mutate({ listingId: item.id, rating: reviewRating, comment: reviewComment || undefined });
+              }}
+            >
+              <h3 className="font-serif text-2xl font-bold text-[#0a0a0a] mb-4">Share your experience</h3>
+              <div className="flex flex-wrap items-center gap-4 mb-4">
+                <label className="text-xs font-bold uppercase tracking-wider text-[#68635c]">Rating</label>
+                <select value={reviewRating} onChange={event => setReviewRating(Number(event.target.value))} className="border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0] text-sm">
+                  {[5, 4, 3, 2, 1].map(value => <option key={value} value={value}>{value} / 5</option>)}
+                </select>
+              </div>
+              <textarea value={reviewComment} onChange={event => setReviewComment(event.target.value)} rows={4} maxLength={2000} placeholder="What should other buyers know?" className="w-full border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0] font-serif text-sm" />
+              <button type="submit" disabled={submitReviewMutation.isPending} className="mt-4 text-xs font-bold uppercase tracking-wider text-white brand-gradient px-5 py-3 rounded disabled:opacity-50">
+                {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
+              </button>
+              {submitReviewMutation.error && <p className="form-error mt-3">{submitReviewMutation.error.message}</p>}
+              {submitReviewMutation.isSuccess && <p className="text-sm text-[#065f46] mt-3">Review submitted for moderation.</p>}
+            </form>
+          )}
+        </section>
 
         {/* Related Products / Services Row */}
         {relatedItems && relatedItems.length > 0 && (

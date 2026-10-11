@@ -34,6 +34,12 @@
 - [x] Generate and apply Drizzle migration `0005_dashing_sir_ram.sql`.
 - [x] Verify the four notification tables and indexes in the managed database.
 - [x] Pass type check, 9 unit tests, production build, and diff validation.
+- [x] Add protected notification inbox, unread-count, mark-read, mark-all-read, and preference procedures.
+- [x] Add idempotent inquiry notification event enqueueing for create, reply, and resolution flows.
+- [x] Add retry-safe outbox worker with in-app fan-out and queued email delivery records.
+- [x] Document notification procedures in Swagger/OpenAPI and add worker policy tests.
+- [x] Integrate the server-only SendPulse adapter with OAuth/API-key auth, token caching, timeouts, and provider delivery status updates.
+- [x] Add SendPulse payload/configuration tests without issuing live email sends.
 
 ## Verification
 

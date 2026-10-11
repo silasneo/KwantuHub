@@ -41,8 +41,10 @@ import {
   vendorProfiles,
   disputes,
   wishlists,
+  notificationPreferences,
+  notifications,
 } from "../drizzle/schema";
-import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import {
   clearAuthCookie,
   hashPassword,
@@ -52,6 +54,10 @@ import {
   verifyPassword,
 } from "./jwtAuth";
 import { countUnreadMessages, isInquiryOpen } from "./inquiryWorkflow";
+import {
+  enqueueNotificationEvent,
+  getOrCreateNotificationPreferences,
+} from "./notificationWorker";
 
 const contactRevealAttempts = new Map<string, number[]>();
 const CONTACT_REVEAL_WINDOW_MS = 60_000;
@@ -257,6 +263,122 @@ export const appRouter = router({
           })
           .where(eq(users.id, ctx.user.id));
         return { success: true };
+      }),
+  }),
+
+  notifications: router({
+    list: protectedProcedure
+      .input(
+        z.object({
+          unreadOnly: z.boolean().default(false),
+          limit: z.number().int().min(1).max(50).default(20),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return { items: [], unreadCount: 0 };
+        const filters = [eq(notifications.recipientUserId, ctx.user.id)];
+        if (input.unreadOnly) filters.push(isNull(notifications.readAt));
+        const items = await db
+          .select()
+          .from(notifications)
+          .where(and(...filters))
+          .orderBy(desc(notifications.createdAt))
+          .limit(input.limit);
+        const [countRow] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(notifications)
+          .where(
+            and(
+              eq(notifications.recipientUserId, ctx.user.id),
+              isNull(notifications.readAt)
+            )
+          );
+        return { items, unreadCount: Number(countRow?.count || 0) };
+      }),
+
+    unreadCount: protectedProcedure.query(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) return { unreadCount: 0 };
+      const [countRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(notifications)
+        .where(
+          and(
+            eq(notifications.recipientUserId, ctx.user.id),
+            isNull(notifications.readAt)
+          )
+        );
+      return { unreadCount: Number(countRow?.count || 0) };
+    }),
+
+    markRead: protectedProcedure
+      .input(z.object({ notificationId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [updated] = await db
+          .update(notifications)
+          .set({ readAt: new Date() })
+          .where(
+            and(
+              eq(notifications.id, input.notificationId),
+              eq(notifications.recipientUserId, ctx.user.id)
+            )
+          );
+        if (!updated || updated.affectedRows === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Notification not found" });
+        }
+        return { success: true };
+      }),
+
+    markAllRead: protectedProcedure
+      .input(z.object({ notificationType: z.string().max(80).optional() }).optional())
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const filters = [
+          eq(notifications.recipientUserId, ctx.user.id),
+          isNull(notifications.readAt),
+        ];
+        if (input?.notificationType) {
+          filters.push(eq(notifications.notificationType, input.notificationType as typeof notifications.notificationType.enumValues[number]));
+        }
+        const [updated] = await db
+          .update(notifications)
+          .set({ readAt: new Date() })
+          .where(and(...filters));
+        return { updated: updated?.affectedRows || 0 };
+      }),
+
+    getPreferences: protectedProcedure.query(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      return getOrCreateNotificationPreferences(db, ctx.user.id);
+    }),
+
+    updatePreferences: protectedProcedure
+      .input(
+        z.object({
+          inAppEnabled: z.boolean().optional(),
+          emailInquiries: z.boolean().optional(),
+          emailReplies: z.boolean().optional(),
+          emailResolutions: z.boolean().optional(),
+          emailAccount: z.boolean().optional(),
+          quietHoursStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
+          quietHoursEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
+          timezone: z.string().min(1).max(64).nullable().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await getOrCreateNotificationPreferences(db, ctx.user.id);
+        await db
+          .update(notificationPreferences)
+          .set({ ...input, updatedAt: new Date() })
+          .where(eq(notificationPreferences.userId, ctx.user.id));
+        return getOrCreateNotificationPreferences(db, ctx.user.id);
       }),
   }),
 
@@ -600,6 +722,28 @@ export const appRouter = router({
           body: input.message,
         });
 
+        const [vendorUser] = await db
+          .select({ userId: vendorProfiles.userId })
+          .from(vendorProfiles)
+          .where(eq(vendorProfiles.id, listingRows[0].vendorId))
+          .limit(1);
+        if (vendorUser) {
+          await enqueueNotificationEvent(db, {
+            eventType: "INQUIRY_CREATED",
+            idempotencyKey: `inquiry_created:${inqRes.insertId}:${vendorUser.userId}`,
+            recipientUserId: vendorUser.userId,
+            actorUserId: ctx.user.id,
+            entityType: "inquiry",
+            entityId: inqRes.insertId,
+            payload: {
+              inquiryId: inqRes.insertId,
+              listingId: input.listingId,
+              subject: input.subject,
+              actionUrl: `/account?tab=inquiries&inquiry=${inqRes.insertId}`,
+            },
+          });
+        }
+
         await recordAnalyticsEvent({
           eventType: "submit_inquiry",
           userId: ctx.user.id,
@@ -663,6 +807,27 @@ export const appRouter = router({
           body: input.message,
         });
         await db.update(inquiries).set({ updatedAt: new Date() }).where(eq(inquiries.id, inquiry.id));
+        const [vendorUser] = await db
+          .select({ userId: vendorProfiles.userId })
+          .from(vendorProfiles)
+          .where(eq(vendorProfiles.id, inquiry.vendorId))
+          .limit(1);
+        if (vendorUser) {
+          await enqueueNotificationEvent(db, {
+            eventType: "INQUIRY_REPLY_RECEIVED",
+            idempotencyKey: `inquiry_reply_received:${msg.insertId}:${vendorUser.userId}`,
+            recipientUserId: vendorUser.userId,
+            actorUserId: ctx.user.id,
+            entityType: "message",
+            entityId: msg.insertId,
+            payload: {
+              inquiryId: inquiry.id,
+              listingId: inquiry.listingId,
+              subject: `Reply to: ${inquiry.subject}`,
+              actionUrl: `/vendor?tab=inquiries&inquiry=${inquiry.id}`,
+            },
+          });
+        }
         return { id: msg.insertId, success: true };
       }),
 
@@ -671,12 +836,39 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [inquiry] = await db
+          .select()
+          .from(inquiries)
+          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id)))
+          .limit(1);
+        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
         const [updated] = await db
           .update(inquiries)
           .set({ status: "closed", updatedAt: new Date() })
           .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id)));
         if (!updated || updated.affectedRows === 0) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
+        }
+        const [vendorUser] = await db
+          .select({ userId: vendorProfiles.userId })
+          .from(vendorProfiles)
+          .where(eq(vendorProfiles.id, inquiry.vendorId))
+          .limit(1);
+        if (vendorUser) {
+          await enqueueNotificationEvent(db, {
+            eventType: "INQUIRY_RESOLVED",
+            idempotencyKey: `inquiry_resolved:${inquiry.id}:${vendorUser.userId}`,
+            recipientUserId: vendorUser.userId,
+            actorUserId: ctx.user.id,
+            entityType: "inquiry",
+            entityId: inquiry.id,
+            payload: {
+              inquiryId: inquiry.id,
+              listingId: inquiry.listingId,
+              subject: inquiry.subject,
+              actionUrl: `/vendor?tab=inquiries&inquiry=${inquiry.id}`,
+            },
+          });
         }
         return { success: true };
       }),
@@ -995,6 +1187,21 @@ export const appRouter = router({
           .set({ updatedAt: new Date() })
           .where(eq(inquiries.id, input.inquiryId));
 
+        await enqueueNotificationEvent(db, {
+          eventType: "INQUIRY_REPLY_RECEIVED",
+          idempotencyKey: `inquiry_reply_received:${msgRes.insertId}:${inquiry.buyerId}`,
+          recipientUserId: inquiry.buyerId,
+          actorUserId: ctx.user.id,
+          entityType: "message",
+          entityId: msgRes.insertId,
+          payload: {
+            inquiryId: inquiry.id,
+            listingId: inquiry.listingId,
+            subject: `Reply to: ${inquiry.subject}`,
+            actionUrl: `/account?tab=inquiries&inquiry=${inquiry.id}`,
+          },
+        });
+
         return { id: msgRes.insertId, success: true };
       }),
 
@@ -1005,6 +1212,12 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const profile = await getVendorProfileByUserId(ctx.user.id);
         if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
+        const [inquiry] = await db
+          .select()
+          .from(inquiries)
+          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.vendorId, profile.id)))
+          .limit(1);
+        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
         const [updated] = await db
           .update(inquiries)
           .set({ status: "closed", updatedAt: new Date() })
@@ -1012,6 +1225,20 @@ export const appRouter = router({
         if (!updated || updated.affectedRows === 0) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
         }
+        await enqueueNotificationEvent(db, {
+          eventType: "INQUIRY_RESOLVED",
+          idempotencyKey: `inquiry_resolved:${inquiry.id}:${inquiry.buyerId}`,
+          recipientUserId: inquiry.buyerId,
+          actorUserId: ctx.user.id,
+          entityType: "inquiry",
+          entityId: inquiry.id,
+          payload: {
+            inquiryId: inquiry.id,
+            listingId: inquiry.listingId,
+            subject: inquiry.subject,
+            actionUrl: `/account?tab=inquiries&inquiry=${inquiry.id}`,
+          },
+        });
         return { success: true };
       }),
   }),

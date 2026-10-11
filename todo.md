@@ -17,6 +17,15 @@
 - [x] Extend Drizzle schema and managed DB with analytics fields, reviews, contact channels, feature flags, and disputes.
 - [x] Update Swagger/OpenAPI coverage for all current auth, marketplace, buyer, vendor, and admin procedures.
 - [x] Remove user-facing Maker/Manus wording and verify password hashes are not exposed in review responses.
+- [x] Complete Stage 1 Buyer Flow: verified marketplace filters (Price, Verified, Remote), recently viewed history, wishlist persistence, and rating/review submission.
+
+## Stage 2 — Inquiry & Vendor Response MVP
+
+- [x] Add bidirectional buyer/vendor replies with server-side ownership checks.
+- [x] Add buyer/vendor inquiry resolution controls and closed-conversation reply protection.
+- [x] Add buyer and vendor portal controls for replies and resolution status.
+- [x] Document new inquiry reply/resolution procedures in Swagger/OpenAPI.
+- [x] Add unit coverage for inquiry status policy.
 
 ## Verification
 

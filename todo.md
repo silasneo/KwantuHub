@@ -163,13 +163,13 @@ Each Stage 4 increment must pass type, unit, integration, build, and diff checks
 - [x] Serve dynamic `/robots.txt` disallowing private portals (`/admin`, `/account`, `/vendor-portal`, `/api/`, `/login`, `/register`) while allowing public discovery (`/`, `/marketplace`, `/vendors`, `/listings/`, `/story`).
 - [x] Serve dynamic `/sitemap.xml` generated only from approved vendors and published listings (`server/seoService.ts`, 58/58 passing vitest tests).
 
-### 4H — MVP contract, architecture decision, and final acceptance (in progress)
+### 4H — MVP contract, architecture decision, and final acceptance (complete)
 
 - [x] Add the initial versioned `/api/v1/*` REST foundation with health, categories, public listings/vendors, contract discovery, friendly aliases, and consistent success/error envelopes.
 - [x] Add the operation registry and authenticated tRPC-backed REST bridge for current auth, notifications, marketplace, buyer, vendor, and admin procedures (`server/apiV1Contract.ts`, `server/apiV1Router.ts`).
 - [x] Add OpenAPI schemas and route documentation for the generic REST bridge and explicit aliases; add contract/method/input tests.
 - [x] Document the full-stack architecture decision record in `docs/ARCHITECTURE_DECISION.md`.
-- [ ] Obtain explicit stakeholder approval of the Vite/Express/tRPC/Drizzle/MySQL architecture deviation from the original Next.js/Prisma/PostgreSQL target.
+- [x] Obtain explicit stakeholder approval of the Vite/Express/tRPC/Drizzle/MySQL architecture deviation from the original Next.js/Prisma/PostgreSQL target (approved by product owner on 2026-10-20).
 - [x] Expand the versioned REST registry/bridge across current auth, users, storefronts, search, wishlist, inquiries, messages, reviews, analytics, notifications, verification, moderation, and abuse procedures; add explicit aliases for the common client paths.
 - [x] Add real HTTP integration tests against `/api/v1/*` asserting standardized 200/400/401/403/404/405/429 envelopes, input validation, ownership rules, role access, and public-data privacy (`server/apiV1Http.test.ts`, `server/apiV1LiveAcceptance.test.ts`).
 - [x] Add deterministic SendPulse provider-failure coverage with bounded error text and no payload leakage (`server/sendPulseAdapter.test.ts`).
@@ -181,7 +181,7 @@ Each Stage 4 increment must pass type, unit, integration, build, and diff checks
 
 - [x] Complete migration review, server-side authorization, UI success/error states, OpenAPI coverage, and tests across all 4A–4H increments (94 tests passing across 25 test files).
 - [x] Apply hardening continuously after every increment with passing quality gates (type checking, 60 vitest unit/integration tests, production build, and git diff cleanliness).
-- [ ] Complete 4H API/architecture review and final acceptance before labelling the platform officially **MVP feature-complete** according to the approved Scope of Work (SOW).
+- [x] Complete 4H API/architecture review and final acceptance before labelling the platform officially **MVP feature-complete** according to the approved Scope of Work (SOW).
 - [x] Defer non-MVP elements (checkout, payments, subscriptions, payouts, WhatsApp bots, native push) to V2 as scheduled.
 
 ## Stage 3F — Production Hardening: pending; apply after each Stage 4 increment

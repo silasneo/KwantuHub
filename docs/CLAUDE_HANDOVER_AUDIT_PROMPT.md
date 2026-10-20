@@ -524,3 +524,409 @@ Recommendation:
 ```
 
 End with a concise release decision and a separate list of any stakeholder decisions still required. Do not close a finding merely because it appears in a documentation checkbox. Do not recommend a full framework/database migration unless you demonstrate a concrete product, operational, compliance, or performance requirement that the current architecture cannot meet.
+
+
+## Portability audit and complete Manus-dependency removal checklist
+
+The next engineering objective is to make KwantuHub deployable on any conventional Node host, VPS, Docker host, AWS environment, Vercel-style serverless platform, or Netlify-style functions platform without depending on Manus Forge, Manus storage URLs, Manus-only runtime tooling, or the Manus domain. Treat this as a portability workstream, not as permission to change the marketplace product scope.
+
+The desired end state is a provider-neutral application with the following boundaries:
+
+```text
+React/Vite browser
+        |
+        v
+Express/tRPC or REST API
+        |
+        +--> MySQL-compatible database through Drizzle
+        +--> S3-compatible object storage through a storage adapter
+        +--> SendPulse transactional email
+        +--> Twilio Verify phone OTP
+        +--> Cloudflare Turnstile
+        +--> Didit hosted KYC and webhook
+        +--> Optional independent maps/AI provider adapters
+```
+
+The application must not require a Manus account, Manus OAuth, Manus Forge URL, Manus Forge API key, `/manus-storage/*`, a `*.manus.space` domain, or a Manus-specific Vite plugin to build, start, authenticate users, serve public assets, process notifications, or connect to its database.
+
+### Portability status categories
+
+For every item below, Claude must classify the item as `Removed`, `Replaced`, `Retained as optional development tooling`, `Not applicable`, or `Still a hard dependency`. Do not delete a file solely because its name contains `Manus`; first confirm whether it is active runtime code, a legacy template, a test fixture, or a useful optional module. Update imports, tests, documentation, deployment configuration, and seed data together so the repository cannot build successfully while still pointing at a missing provider.
+
+### 1. Storage adapter and object URL migration — mandatory
+
+Replace the current Forge implementation in `server/storage.ts`. Create a provider-neutral adapter, preferably `server/storageProvider.ts`, with the same conceptual operations:
+
+```ts
+putObject(input): Promise<{ key: string; url?: string }>;
+getPublicUrl(key): string;
+getSignedDownloadUrl(key, expiresInSeconds): Promise<string>;
+deleteObject(key): Promise<void>;
+headObject(key): Promise<{ exists: boolean; size?: number; contentType?: string }>;
+```
+
+Use `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner`, which are already listed in `package.json`. The adapter must support AWS S3 and S3-compatible providers such as Cloudflare R2, MinIO, DigitalOcean Spaces, and Backblaze B2. Keep storage keys provider-neutral and stable. Never store a provider-specific URL in the database. Use UUID-based keys rather than original filenames, for example:
+
+```text
+listings/{listingId}/{uuid}.webp
+vendors/{vendorId}/logo/{uuid}.webp
+vendors/{vendorId}/cover/{uuid}.webp
+verification/{sessionId}/{uuid}.pdf
+```
+
+Modify:
+
+- `server/storage.ts` — replace Forge presigning and `/manus-storage` output with the generic adapter or make this file a compatibility facade over the new adapter.
+- `server/_core/storageProxy.ts` — remove the Forge proxy, or replace it with a provider-neutral `/media/*` route that resolves public objects through the configured CDN/base URL. Do not use a proxy for private KYC evidence unless it performs authorization and short-lived signing.
+- `server/_core/env.ts` — remove `BUILT_IN_FORGE_API_URL` and `BUILT_IN_FORGE_API_KEY` from storage logic and add the S3 variables listed in the env template below.
+- `server/_core/index.ts` — remove `registerStorageProxy` if a CDN/public URL strategy is used; otherwise register only the provider-neutral media route.
+- `server/routers.ts` — change media validation from `/manus-storage/` references to stable object keys or the configured public media URL. Add an authenticated upload/presign procedure where needed, enforce owner/admin authorization, file limits, MIME allowlists, and object-key prefixes.
+- `drizzle/schema.ts` — ensure `listingMedia` stores `storageKey`, stable metadata, visibility, content type, size, and optional checksum; it should not require a Manus URL. Ensure `vendorVerificationEvidence.fileStoragePath` stores only a private object key.
+- `drizzle/relations.ts` — update relations if media metadata tables are added.
+- All relevant numbered migrations — add a non-destructive migration for any new storage metadata or visibility columns. Do not rewrite historical migrations that may already be applied in production.
+- Add `server/storageProvider.test.ts` — test deterministic key generation, path traversal rejection, MIME/size limits, signed/private versus public behavior, endpoint/path-style handling, and provider error redaction.
+- Add a storage migration/health script — verify every database-referenced object exists before switching providers and produce a report without exposing private evidence contents.
+
+For manual KYC evidence, fail closed: if the object upload fails, do not create the database evidence row. Store only the private key and sanitized metadata. Generate a short-lived signed download URL only after an authorized admin request. Respect `retentionExpiresAt` and delete or tombstone expired evidence.
+
+### 2. Migrate existing Manus assets and hardcoded URLs — mandatory
+
+Search the entire repository for `manus-storage`, `manus.space`, `BUILT_IN_FORGE`, `forgeApi`, and `kwantumkt-lgpadidm`. Replace every active production reference.
+
+Modify or migrate:
+
+- `server/seed.ts` — replace `/manus-storage/...` seed references with stable S3 keys or deployment-independent public media URLs. Add an idempotent asset migration/seed step rather than leaving seed records pointing to unavailable Manus objects.
+- `client/src/components/SiteChrome.tsx` — replace the Manus-hosted identity mark with a stable public asset URL or a small repository-owned SVG in `client/public/`.
+- `client/src/pages/Home.tsx` — replace all Manus-hosted hero and story images with migrated keys/CDN URLs.
+- `client/src/pages/LoginPage.tsx` — replace the Manus-hosted identity asset.
+- `client/index.html` — replace hardcoded Manus Open Graph/canonical URLs with `${APP_URL}` at build/deployment time or server-rendered metadata strategy.
+- `client/src/components/SEOHead.tsx` — derive canonical/OG URLs from deployment configuration or a server-provided public base URL; never default production metadata to Manus.
+- `server/seoService.ts` — remove the hardcoded Manus base URL from robots and sitemap generation. Require `APP_URL` in production and allow localhost only in development.
+- `server/db.ts` and public projection helpers — return stable public media URLs through the storage adapter; never expose private storage keys or raw verification paths.
+- `server/privacyAudit.test.ts`, `server/seoService.test.ts`, API privacy tests, and any snapshot fixtures — assert that no Manus URL or private storage key appears in public responses.
+
+Keep object keys unchanged during migration wherever possible. Copy objects from the old provider to the new bucket, preserve logical keys, update only the adapter/CDN origin, and verify object existence before cutover. If existing keys contain a Manus-specific prefix, create a one-time mapping/migration table or deterministic rewrite and update all database references in one controlled migration.
+
+### 3. Remove Manus-only development/runtime tooling — mandatory for independent builds
+
+Modify:
+
+- `vite.config.ts` — remove `vitePluginManusRuntime()` from the production plugin list. Keep the custom debug collector only behind an explicit development flag, or remove it and use the target platform’s logs. Remove Manus-specific `allowedHosts` entries and replace them with `APP_ALLOWED_HOSTS` or a deployment-safe configuration.
+- `package.json` — remove `vite-plugin-manus-runtime` if no longer used. Add portable scripts such as `worker`, `db:migrate`, `db:check`, and `storage:check` where appropriate.
+- `pnpm-lock.yaml` — regenerate after dependency removal/addition.
+- `client/public/__manus__/debug-collector.js` and `client/public/__manus__/version.json` — remove if they are not required by the chosen deployment platform.
+- `.manus-logs/` and any related ignore/config files — remove Manus-only log handling; use stdout/stderr, the VPS supervisor, Docker logs, or the target provider’s logging system.
+- Any test or build scripts that expect `__manus__` endpoints — replace them with platform-neutral health/logging tests.
+
+The normal production command should be portable:
+
+```bash
+pnpm run build
+pnpm run start
+```
+
+No production startup command should require a Manus CLI, Manus browser, Manus-specific filesystem mount, or Manus environment injection.
+
+### 4. Remove legacy Manus OAuth/template coupling — mandatory review
+
+The active product uses JWT email/password authentication. Review and either remove or isolate the legacy template files:
+
+- `server/_core/oauth.ts`
+- `server/_core/sdk.ts`
+- `server/_core/types/manusTypes.ts`
+- Any unused OAuth callback registration or route references.
+- `shared/const.ts` OAuth state helpers, if no longer referenced by active authentication.
+- `server/_core/env.ts` fields such as `oAuthServerUrl`, `appId`, and any owner/open-ID fields that exist solely for legacy template behavior.
+- Any `OAUTH_SERVER_URL`, `VITE_APP_ID`, Manus OAuth portal, or OAuth callback documentation.
+- Authentication tests that assume Manus OAuth.
+
+Do not remove the internal `users.openId` column without a migration plan. It may still be used as a legacy/internal stable identifier by existing data. Either document it as an internal legacy identifier or introduce a neutral `externalId`/`userKey` column and migrate references safely.
+
+Confirm that JWT authentication remains independent:
+
+```text
+server/jwtAuth.ts
+server/_core/context.ts
+server/routers.ts auth procedures
+bcrypt/bcryptjs password hashing
+httpOnly secure session cookie
+```
+
+### 5. Replace or remove Manus built-in service modules — conditional by usage
+
+Audit imports before changing these files:
+
+- `server/_core/dataApi.ts`
+- `server/_core/imageGeneration.ts`
+- `server/_core/llm.ts`
+- `server/_core/map.ts`
+- `server/_core/notification.ts`
+- `server/_core/voiceTranscription.ts`
+- `server/_core/heartbeat.ts`
+
+If an active feature imports one of them, replace the implementation with an independent provider adapter and neutral environment variables. If no production code imports it, remove it or clearly mark it as optional template code. The application must not fail to start because `BUILT_IN_FORGE_API_URL` or `BUILT_IN_FORGE_API_KEY` is absent.
+
+For maps, replace `client/src/components/Map.tsx` Forge proxy usage with a direct provider-neutral map strategy, such as a server-side Google Maps proxy with `GOOGLE_MAPS_API_KEY`, Mapbox, MapLibre, or a no-map fallback. Do not expose a server-only map key in the browser.
+
+For AI, voice, image generation, data APIs, and owner notifications, do not retain a hidden Manus fallback. Use a clear optional adapter and a clear disabled/unconfigured state.
+
+### 6. Replace Manus domain defaults and deployment URLs — mandatory
+
+Modify:
+
+- `server/_core/env.ts` — make `APP_URL` the source of truth.
+- `server/seoService.ts` — use `APP_URL` for sitemap/robots.
+- `client/src/components/SEOHead.tsx` — use the configured public URL.
+- `client/index.html` — replace fixed Open Graph URLs.
+- `docs/DIDIT_SETUP.md` — replace the production webhook example with the new domain during deployment.
+- `docs/SENDPULSE.md` — replace the SendPulse webhook URL and token instructions with the new domain.
+- `docs/RUNBOOK.md` — update health checks, webhook destinations, storage, database, and incident procedures.
+- `docs/ARCHITECTURE_DECISION.md`, `docs/MVP_FINAL_ACCEPTANCE_MATRIX.md`, `docs/SEED_DATA_STRATEGY.md`, and this handover note — distinguish historical Manus deployment facts from the portable target architecture.
+
+Production should fail configuration validation if `APP_URL` is absent or still points to a Manus domain. Development may use `http://localhost:3000`.
+
+### 7. Make the notification worker portable — mandatory for serverless deployment
+
+The current worker starts inside the Express process through `server/_core/index.ts` and `server/notificationWorker.ts`. This is suitable for a persistent VPS, Docker container, or long-running Node service but is not reliable on Vercel/Netlify serverless functions.
+
+Modify or add:
+
+- `server/notificationWorker.ts` — preserve lease locks, retries, idempotency, pause state, suppression checks, and retention cleanup.
+- `server/worker.ts` — add a standalone worker entry point for Docker/VPS/ECS execution.
+- `server/_core/index.ts` — make in-process worker startup optional and disabled when an external worker mode is configured.
+- `package.json` — add `pnpm run worker` and document `WORKER_MODE=external|embedded`.
+- Add a scheduled/serverless worker handler if Vercel/Netlify is a target. It must claim jobs with durable leases and return within platform execution limits.
+- `docs/RUNBOOK.md` — document both persistent-worker and serverless-scheduled-worker operation.
+- Worker integration tests — verify two workers cannot process the same lease, crashed leases recover, and provider failures remain bounded.
+
+For Vercel or Netlify, use a remote MySQL-compatible database, remote S3 storage, and a scheduled function or external worker. Dockerized MySQL and a persistent worker are more appropriate for a VPS or Docker host.
+
+### 8. Add portable Docker deployment files — recommended for VPS and local development
+
+Add these files; do not commit real secrets:
+
+- `Dockerfile` — multi-stage Node build, production-only runtime dependencies, non-root user, health check, and `pnpm run start`.
+- `docker-compose.yml` — application, worker, and optional MySQL services. Use named volumes for MySQL data; never use the application container filesystem for uploads.
+- `.dockerignore` — exclude `.git`, `node_modules`, `dist`, `.manus-logs`, local env files, screenshots, and test artifacts.
+- `docker/mysql/init/` — optional initialization scripts only if needed; prefer Drizzle migrations for schema changes.
+- `scripts/docker-entrypoint.sh` or equivalent — wait for the database, run safe migrations, then start the selected process. Do not run destructive reset commands in production.
+- `docs/DEPLOYMENT.md` — document Docker/VPS, managed database, Vercel, and Netlify profiles.
+- `docs/RUNBOOK.md` — add container health, logs, backup, restore, worker restart, and object-storage procedures.
+
+Use Docker MySQL for local development, staging, and a VPS if operationally appropriate. Do not run a stateful MySQL container inside Vercel or Netlify. Those platforms need an external managed database.
+
+### 9. Update tests, CI, and deployment verification — mandatory
+
+Modify or add:
+
+- `server/storageProvider.test.ts`
+- `server/apiV1Http.test.ts`
+- `server/apiV1LiveAcceptance.test.ts`
+- `server/privacyAudit.test.ts`
+- `server/seoService.test.ts`
+- `server/diditWebhook.test.ts`
+- `server/sendPulseWebhook.test.ts`
+- `server/notificationWorker.test.ts`
+- `server/acceptanceMatrix.test.ts`
+- Add a portable `server/config.test.ts` for missing/invalid production configuration.
+- Add a deployment smoke test that starts the production build without Manus variables.
+- Add a storage migration verification test that confirms stable keys and URLs across two configured storage providers.
+- Add CI workflow files under `.github/workflows/` to run type checking, tests, build, migration validation, and `git diff --check`.
+
+Required negative assertions:
+
+- Build/start succeeds without Manus Forge variables.
+- No public response contains `/manus-storage/`, `manus.space`, Forge URLs, raw S3 credentials, private evidence keys, or internal provider metadata.
+- No private evidence is publicly downloadable.
+- `APP_URL` controls canonical, sitemap, robots, webhook documentation/configuration, and email links.
+- The REST and tRPC contracts remain behaviorally equivalent after storage/provider replacement.
+
+### 10. Documentation and repository cleanup — mandatory
+
+Update all active references in:
+
+- `README.md`
+- `todo.md`
+- `docs/ARCHITECTURE_DECISION.md`
+- `docs/MVP_FINAL_ACCEPTANCE_MATRIX.md`
+- `docs/RUNBOOK.md`
+- `docs/DIDIT_SETUP.md`
+- `docs/SENDPULSE.md`
+- `docs/SEED_DATA_STRATEGY.md`
+- `docs/VENDOR_KYC_DECISION.md`
+- `docs/KYC_PAYG_EVALUATION.md`
+- `docs/CLAUDE_HANDOVER_AUDIT_PROMPT.md`
+- `server/apiDocs.ts` and `server/openapi.ts` where URLs or server assumptions are documented.
+
+Add `docs/DEPLOYMENT.md` with explicit profiles:
+
+1. Manus WebDev compatibility, if retained temporarily.
+2. Docker Compose on VPS with MySQL and a persistent worker.
+3. Vercel/Netlify frontend/API with external MySQL, S3, and scheduled/external worker.
+4. AWS deployment with S3, RDS/Aurora MySQL, ECS/EC2/Lambda as appropriate.
+
+## Portable environment template for the handover
+
+Add a committed placeholder-only `.env.example` at the repository root. Never put real values in it. Keep server-only secrets unprefixed; only browser-safe Vite values may use `VITE_`. The following template covers the current external dependencies and the portable replacements. Remove unused sections only after verifying that the corresponding feature is not active.
+
+```dotenv
+# ============================================================
+# KwantuHub portable deployment environment template
+# Copy to .env locally; never commit .env or real secret values.
+# Server-only values have no VITE_ prefix.
+# ============================================================
+
+# -----------------------------
+# Application/runtime
+# -----------------------------
+NODE_ENV=development
+PORT=3000
+APP_URL=http://localhost:3000
+APP_ALLOWED_HOSTS=localhost,127.0.0.1
+COOKIE_DOMAIN=
+COOKIE_SECURE=false
+JWT_SECRET=replace-with-a-long-random-production-secret
+
+# -----------------------------
+# MySQL/TiDB-compatible database
+# -----------------------------
+# Primary application connection used by Drizzle.
+DATABASE_URL=mysql://kwantuhub:replace-password@127.0.0.1:3306/kwantuhub
+DB_POOL_SIZE=10
+DB_CONNECT_TIMEOUT_MS=10000
+
+# Optional Docker Compose MySQL variables.
+MYSQL_DATABASE=kwantuhub
+MYSQL_USER=kwantuhub
+MYSQL_PASSWORD=replace-with-local-password
+MYSQL_ROOT_PASSWORD=replace-with-local-root-password
+MYSQL_HOST=mysql
+MYSQL_PORT=3306
+
+# -----------------------------
+# AWS S3 or S3-compatible object storage
+# -----------------------------
+AWS_REGION=us-east-1
+AWS_S3_BUCKET=kwantuhub-assets
+AWS_ACCESS_KEY_ID=replace-with-server-side-access-key
+AWS_SECRET_ACCESS_KEY=replace-with-server-side-secret-key
+# Optional for Cloudflare R2, MinIO, DigitalOcean Spaces, etc.
+AWS_S3_ENDPOINT=
+AWS_S3_FORCE_PATH_STYLE=false
+AWS_S3_PUBLIC_BASE_URL=https://cdn.example.com
+AWS_S3_SIGNED_URL_TTL_SECONDS=300
+AWS_S3_UPLOAD_PREFIX=kwantuhub
+# Optional AWS KMS key; leave empty when provider-managed encryption is used.
+AWS_S3_KMS_KEY_ID=
+
+# -----------------------------
+# Public/browser-safe configuration
+# -----------------------------
+VITE_APP_TITLE=KwantuHub Marketplace
+VITE_TURNSTILE_SITE_KEY=replace-with-public-turnstile-site-key
+# Only use this if a client-side map implementation requires a restricted key.
+VITE_PUBLIC_MAPS_KEY=
+
+# -----------------------------
+# Cloudflare Turnstile bot protection
+# -----------------------------
+TURNSTILE_SECRET_KEY=replace-with-server-side-turnstile-secret
+TURNSTILE_EXPECTED_HOSTNAME=localhost
+
+# -----------------------------
+# Twilio Verify phone OTP
+# -----------------------------
+TWILIO_ACCOUNT_SID=replace-with-twilio-account-sid
+TWILIO_AUTH_TOKEN=replace-with-twilio-auth-token
+TWILIO_VERIFY_SERVICE_SID=replace-with-twilio-verify-service-sid
+
+# -----------------------------
+# Didit hosted KYC
+# -----------------------------
+DIDIT_API_KEY=replace-with-didit-api-key
+DIDIT_WORKFLOW_ID=replace-with-didit-workflow-id
+DIDIT_WEBHOOK_SECRET=replace-with-didit-webhook-secret
+DIDIT_API_BASE_URL=https://verification.didit.me
+DIDIT_WEBHOOK_MAX_AGE_SECONDS=300
+
+# -----------------------------
+# SendPulse transactional email
+# -----------------------------
+SENDPULSE_API_KEY=replace-with-sendpulse-api-key
+SENDPULSE_API_BASE_URL=https://api.sendpulse.com
+SENDPULSE_API_FROM_EMAIL=verified-sender@example.com
+SENDPULSE_API_FROM_NAME=KwantuHub
+SENDPULSE_WEBHOOK_TOKEN=replace-with-long-random-webhook-token
+# OAuth aliases are optional if API-key mode is not used.
+SENDPULSE_CLIENT_ID=
+SENDPULSE_CLIENT_SECRET=
+
+# -----------------------------
+# Optional direct email fallback
+# -----------------------------
+# Use only if an independent SMTP/transactional adapter is implemented.
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASSWORD=
+SMTP_FROM_EMAIL=
+SMTP_FROM_NAME=KwantuHub
+
+# -----------------------------
+# Optional maps provider
+# -----------------------------
+MAPS_PROVIDER=none
+GOOGLE_MAPS_API_KEY=
+MAPBOX_ACCESS_TOKEN=
+
+# -----------------------------
+# Optional AI/voice/image providers
+# -----------------------------
+# These replace unused Manus Forge modules only if those features are retained.
+LLM_PROVIDER=none
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+IMAGE_PROVIDER=none
+IMAGE_API_KEY=
+VOICE_PROVIDER=none
+VOICE_API_KEY=
+DATA_API_PROVIDER=none
+DATA_API_KEY=
+
+# -----------------------------
+# Worker and operational behavior
+# -----------------------------
+WORKER_MODE=external
+WORKER_POLL_INTERVAL_MS=5000
+WORKER_BATCH_SIZE=20
+WORKER_LEASE_SECONDS=120
+NOTIFICATION_RETENTION_DAYS=90
+STORAGE_HEALTHCHECK_ON_STARTUP=true
+
+# -----------------------------
+# Optional observability
+# -----------------------------
+LOG_LEVEL=info
+SENTRY_DSN=
+OTEL_EXPORTER_OTLP_ENDPOINT=
+OTEL_EXPORTER_OTLP_HEADERS=
+```
+
+Claude must compare this template against the actual variables read in `server/_core/env.ts` and any provider adapter. Do not blindly add unused variables to runtime code. If a variable is renamed, provide a backward-compatible migration path or update all deployment documentation and secrets at the same time.
+
+## Portability acceptance criteria
+
+Do not consider the Manus-removal work complete until all of the following are demonstrated:
+
+1. `pnpm install`, `pnpm run check`, `pnpm test`, and `pnpm run build` pass with no Manus-specific secrets.
+2. The production server starts with only the portable environment variables and a reachable MySQL-compatible database.
+3. A Docker Compose profile starts MySQL, runs migrations, starts the API, and starts the worker without Manus services.
+4. A fresh S3-compatible bucket can receive listing media and private evidence using stable keys.
+5. Existing objects can be copied to a replacement bucket without changing database keys or public application URLs.
+6. Public listing media works through the configured CDN/base URL; private evidence requires authorized short-lived signing.
+7. Didit and SendPulse webhooks work against the new `APP_URL` and reject invalid signatures/tokens.
+8. JWT login, all role permissions, REST aliases, tRPC procedures, notifications, KYC, and admin operations continue to work.
+9. No response, HTML metadata, seed fixture, log, or documentation path silently depends on `manus.space`, `/manus-storage/`, Forge, Manus OAuth, or `vite-plugin-manus-runtime`.
+10. The application can be deployed using a conventional VPS/Docker path and a serverless-compatible path, with the worker architecture explicitly documented for each.
+
+The final Claude report must include a file-by-file portability diff summary, a list of files deleted, a list of files added, environment-variable migration notes, object-storage migration risks, database/Docker deployment risks, and a recommendation on whether Vercel/Netlify is appropriate for the current worker architecture.

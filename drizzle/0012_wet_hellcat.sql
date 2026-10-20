@@ -1,0 +1,1 @@
+ALTER TABLE `vendorProfiles` ADD `standardsAcknowledgedAt` timestamp;

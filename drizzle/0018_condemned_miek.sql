@@ -1,0 +1,1 @@
+ALTER TABLE `vendorVerificationSessions` MODIFY COLUMN `provider` enum('didit','veriff','sumsub','manual') NOT NULL;

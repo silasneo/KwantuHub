@@ -1,29 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
+import TurnstileField from "@/components/TurnstileField";
 
 interface ContactRevealProps {
   listingId: number;
 }
 
-function getAnonymousSessionId() {
-  if (typeof window === "undefined") return undefined;
-  const key = "kwantuhub_anonymous_session";
-  const existing = window.localStorage.getItem(key);
-  if (existing) return existing;
-  const value = crypto.randomUUID();
-  window.localStorage.setItem(key, value);
-  return value;
-}
-
 export default function ContactReveal({ listingId }: ContactRevealProps) {
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string>();
+  const [turnstileToken, setTurnstileToken] = useState<string>();
+  const { isAuthenticated } = useAuth();
   const reveal = trpc.marketplace.revealContact.useMutation({
     onSuccess: () => setRevealed(true),
   });
-
-  useEffect(() => setSessionId(getAnonymousSessionId()), []);
 
   const channels = useMemo(() => reveal.data?.channels || [], [reveal.data]);
   const labelFor = (type: string) =>
@@ -49,18 +40,22 @@ export default function ContactReveal({ listingId }: ContactRevealProps) {
           <h2>Connect with this vendor</h2>
           <p>Reveal the contact channels the vendor has chosen to share.</p>
         </div>
-        {!revealed && (
+        {!revealed && isAuthenticated && (
+          <>
+          <TurnstileField action="reveal_contact" onToken={setTurnstileToken} />
           <button
             type="button"
             className="brand-button contact-reveal__button"
             onClick={() =>
-              reveal.mutate({ listingId, anonymousSessionId: sessionId })
+              reveal.mutate({ listingId, turnstileToken })
             }
             disabled={reveal.isPending}
           >
             {reveal.isPending ? "Revealing…" : "Show contact"}
           </button>
+          </>
         )}
+        {!revealed && !isAuthenticated && <p className="text-sm text-[#68635c]">Sign in and verify your email and phone to reveal vendor contact channels.</p>}
       </div>
 
       {revealed && channels.length > 0 && (

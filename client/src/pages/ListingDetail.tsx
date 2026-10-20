@@ -5,6 +5,8 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
 import { ListingImageCarousel } from "@/components/ListingImageCarousel";
 import ContactReveal from "@/components/ContactReveal";
+import TurnstileField from "@/components/TurnstileField";
+import { SEOHead } from "@/components/SEOHead";
 
 export default function ListingDetail() {
   const [, params] = useRoute("/listings/:slug");
@@ -17,6 +19,8 @@ export default function ListingDetail() {
   const [submittedInquiry, setSubmittedInquiry] = useState(false);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
+  const [inquiryTurnstileToken, setInquiryTurnstileToken] = useState<string>();
+  const [reviewTurnstileToken, setReviewTurnstileToken] = useState<string>();
 
   const utils = trpc.useUtils();
   const {
@@ -96,6 +100,30 @@ export default function ListingDetail() {
 
   return (
     <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
+      <SEOHead
+        title={item.title}
+        description={item.description?.slice(0, 160) || `Handcrafted diaspora ${item.listingType} on KwantuHub.`}
+        canonicalPath={`/listings/${item.slug}`}
+        ogType="product"
+        jsonLd={{
+          "@context": "https://schema.org",
+          "@type": item.listingType === "service" ? "Service" : "Product",
+          name: item.title,
+          description: item.description || undefined,
+          offers: item.priceIndication
+            ? {
+                "@type": "Offer",
+                price: item.priceIndication.replace(/[^0-9.]/g, "") || undefined,
+                priceCurrency: "USD",
+                availability: "https://schema.org/InStock",
+              }
+            : undefined,
+          seller: {
+            "@type": "Organization",
+            name: item.vendor.businessName,
+          },
+        }}
+      />
       <SiteHeader />
 
       <main className="flex-1 max-w-6xl mx-auto px-4 sm:px-8 py-12 w-full">
@@ -243,7 +271,7 @@ export default function ListingDetail() {
               className="bg-white border border-[#d9d0c4] rounded p-6 mt-6"
               onSubmit={event => {
                 event.preventDefault();
-                submitReviewMutation.mutate({ listingId: item.id, rating: reviewRating, comment: reviewComment || undefined });
+                submitReviewMutation.mutate({ listingId: item.id, rating: reviewRating, comment: reviewComment || undefined, turnstileToken: reviewTurnstileToken });
               }}
             >
               <h3 className="font-serif text-2xl font-bold text-[#0a0a0a] mb-4">Share your experience</h3>
@@ -254,6 +282,7 @@ export default function ListingDetail() {
                 </select>
               </div>
               <textarea value={reviewComment} onChange={event => setReviewComment(event.target.value)} rows={4} maxLength={2000} placeholder="What should other buyers know?" className="w-full border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0] font-serif text-sm" />
+              <TurnstileField action="submit_review" onToken={setReviewTurnstileToken} />
               <button type="submit" disabled={submitReviewMutation.isPending} className="mt-4 text-xs font-bold uppercase tracking-wider text-white brand-gradient px-5 py-3 rounded disabled:opacity-50">
                 {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
               </button>
@@ -382,6 +411,7 @@ export default function ListingDetail() {
                 />
               </div>
 
+              <TurnstileField action="create_inquiry" onToken={setInquiryTurnstileToken} />
               <div className="flex justify-end gap-3 pt-4 border-t border-[#eee8df]">
                 <button
                   onClick={() => setShowInquiryModal(false)}
@@ -397,6 +427,7 @@ export default function ListingDetail() {
                       subject:
                         inquirySubject || `Inquiry regarding ${item.title}`,
                       message: inquiryMsg,
+                      turnstileToken: inquiryTurnstileToken,
                     });
                   }}
                   disabled={createInquiryMutation.isPending || !inquiryMsg}

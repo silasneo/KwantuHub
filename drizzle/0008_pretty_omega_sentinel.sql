@@ -1,0 +1,1 @@
+ALTER TABLE `inquiries` MODIFY COLUMN `status` enum('open','closed','archived') NOT NULL DEFAULT 'open';

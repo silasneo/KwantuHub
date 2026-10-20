@@ -1,0 +1,1 @@
+ALTER TABLE `notifications` MODIFY COLUMN `notificationType` enum('inquiry_created','inquiry_reply_received','inquiry_resolved','vendor_approved','vendor_rejected','review_moderated','email_address_action_required','email_delivery_alert') NOT NULL;

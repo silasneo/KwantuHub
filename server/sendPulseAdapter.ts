@@ -1,6 +1,4 @@
-const SENDPULSE_API_BASE = "https://api.sendpulse.com";
-const SENDPULSE_TOKEN_URL = `${SENDPULSE_API_BASE}/oauth/access_token`;
-const SENDPULSE_EMAIL_URL = `${SENDPULSE_API_BASE}/smtp/emails`;
+const DEFAULT_SENDPULSE_API_BASE = "https://api.sendpulse.com";
 const REQUEST_TIMEOUT_MS = 10_000;
 
 type SendPulseRecipient = { email: string; name?: string | null };
@@ -14,7 +12,8 @@ export type TransactionalEmailMessage = {
   idempotencyKey: string;
 };
 
-type SendPulseConfig = {
+export type SendPulseConfig = {
+  apiBaseUrl: string;
   clientId?: string;
   clientSecret?: string;
   apiKey?: string;
@@ -26,15 +25,14 @@ type SendPulseToken = { value: string; expiresAt: number };
 
 let cachedToken: SendPulseToken | null = null;
 
-export function getSendPulseConfig(
-  env: NodeJS.ProcessEnv = process.env
-): SendPulseConfig {
+export function getSendPulseConfig(env: NodeJS.ProcessEnv = process.env): SendPulseConfig {
   return {
+    apiBaseUrl: (env.SENDPULSE_API_BASE_URL || DEFAULT_SENDPULSE_API_BASE).replace(/\/$/, ""),
     clientId: env.SENDPULSE_CLIENT_ID,
     clientSecret: env.SENDPULSE_CLIENT_SECRET,
     apiKey: env.SENDPULSE_API_KEY,
-    fromEmail: env.SENDPULSE_FROM_EMAIL,
-    fromName: env.SENDPULSE_FROM_NAME || "KwantuHub",
+    fromEmail: env.SENDPULSE_API_FROM_EMAIL || env.SENDPULSE_FROM_EMAIL,
+    fromName: env.SENDPULSE_API_FROM_NAME || env.SENDPULSE_FROM_NAME || "KwantuHub",
   };
 }
 
@@ -79,6 +77,17 @@ async function fetchWithTimeout(
   }
 }
 
+async function readProviderError(response: Response) {
+  const text = await response.text();
+  if (!text) return `HTTP ${response.status}`;
+  try {
+    const body = JSON.parse(text) as { message?: string; error?: string; error_description?: string };
+    return body.message || body.error_description || body.error || text.slice(0, 500);
+  } catch {
+    return text.slice(0, 500);
+  }
+}
+
 async function getAccessToken(config: SendPulseConfig) {
   if (config.apiKey) return config.apiKey;
   if (!config.clientId || !config.clientSecret) {
@@ -88,7 +97,7 @@ async function getAccessToken(config: SendPulseConfig) {
     return cachedToken.value;
   }
 
-  const response = await fetchWithTimeout(SENDPULSE_TOKEN_URL, {
+  const response = await fetchWithTimeout(`${config.apiBaseUrl}/oauth/access_token`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -98,13 +107,10 @@ async function getAccessToken(config: SendPulseConfig) {
     }),
   });
   if (!response.ok) {
-    throw new Error(`SendPulse authorization failed (${response.status})`);
+    throw new Error(`SendPulse authorization failed (${response.status}): ${await readProviderError(response)}`);
   }
-  const body = (await response.json()) as {
-    access_token?: string;
-    expires_in?: number;
-  };
-  if (!body.access_token) throw new Error("SendPulse authorization returned no token");
+  const body = (await response.json()) as { access_token?: string; expires_in?: number };
+  if (!body.access_token) throw new Error("SendPulse authorization returned no access token");
   cachedToken = {
     value: body.access_token,
     expiresAt: Date.now() + Math.max(60, body.expires_in || 3600) * 1000,
@@ -124,12 +130,23 @@ export class SendPulseTransactionalEmailAdapter {
     return isSendPulseConfigured(this.config);
   }
 
-  async send(message: TransactionalEmailMessage) {
-    if (!this.isConfigured()) {
-      throw new Error("SendPulse is not configured");
-    }
+  async verifyAuth() {
+    if (!this.isConfigured()) throw new Error("SendPulse is not configured");
     const token = await getAccessToken(this.config);
-    const response = await fetchWithTimeout(SENDPULSE_EMAIL_URL, {
+    const response = await fetchWithTimeout(`${this.config.apiBaseUrl}/user/info`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`SendPulse auth verification failed (${response.status}): ${await readProviderError(response)}`);
+    }
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  async send(message: TransactionalEmailMessage) {
+    if (!this.isConfigured()) throw new Error("SendPulse is not configured");
+    const token = await getAccessToken(this.config);
+    const response = await fetchWithTimeout(`${this.config.apiBaseUrl}/smtp/emails`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -139,13 +156,9 @@ export class SendPulseTransactionalEmailAdapter {
       body: JSON.stringify(buildSendPulseEmailPayload(message, this.config)),
     });
     if (!response.ok) {
-      throw new Error(`SendPulse email request failed (${response.status})`);
+      throw new Error(`SendPulse email request failed (${response.status}): ${await readProviderError(response)}`);
     }
-    const body = (await response.json()) as {
-      id?: string | number;
-      result?: boolean;
-      message_id?: string | number;
-    };
+    const body = (await response.json()) as { id?: string | number; result?: boolean; message_id?: string | number };
     return {
       providerMessageId: String(body.id ?? body.message_id ?? message.idempotencyKey),
       accepted: body.result !== false,

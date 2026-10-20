@@ -18,4 +18,25 @@ describe("KwantuHub OpenAPI document", () => {
       name: "kwantu_jwt",
     });
   });
+
+  it("documents filtered vendor and admin analytics", () => {
+    expect(openapiDocument.paths["/api/trpc/vendor.analytics"]).toBeDefined();
+    expect(openapiDocument.paths["/api/trpc/admin.analytics"]).toBeDefined();
+    expect(openapiDocument.paths["/api/trpc/auth.contactStatus"]).toBeDefined();
+    expect(openapiDocument.paths["/api/trpc/auth.requestEmailOtp"]).toBeDefined();
+    expect(openapiDocument.paths["/api/trpc/auth.verifyEmailOtp"]).toBeDefined();
+    expect(openapiDocument.paths["/api/trpc/auth.requestPhoneOtp"]).toBeDefined();
+    expect(openapiDocument.paths["/api/trpc/auth.verifyPhoneOtp"]).toBeDefined();
+  });
+
+  it("documents the versioned REST compatibility layer and error envelope", () => {
+    expect(openapiDocument.paths["/api/v1/contract"]).toBeDefined();
+    expect(openapiDocument.paths["/api/v1/{domain}/{procedure}"]).toMatchObject({
+      get: expect.any(Object),
+      post: expect.any(Object),
+    });
+    expect(openapiDocument.components.schemas.RestSuccessEnvelope).toBeDefined();
+    expect(openapiDocument.components.schemas.RestErrorEnvelope).toBeDefined();
+    expect(openapiDocument.components.parameters.RestInput).toBeDefined();
+  });
 });

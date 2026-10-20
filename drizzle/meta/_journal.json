@@ -43,6 +43,97 @@
       "when": 1791742342581,
       "tag": "0005_dashing_sir_ram",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1791744444646,
+      "tag": "0006_wandering_centennial",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1791748616434,
+      "tag": "0007_workable_luckman",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1791752556183,
+      "tag": "0008_pretty_omega_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1791752716559,
+      "tag": "0009_narrow_ricochet",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1791753033214,
+      "tag": "0010_powerful_beast",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1791753424684,
+      "tag": "0011_daffy_morbius",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1791754363525,
+      "tag": "0012_wet_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1791819556985,
+      "tag": "0013_unique_nitro",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1791819912750,
+      "tag": "0014_ambitious_quentin_quire",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "5",
+      "when": 1791820949736,
+      "tag": "0015_special_shadow_king",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1791821281559,
+      "tag": "0016_abandoned_clint_barton",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1792346455681,
+      "tag": "0017_pink_black_bolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1792512698500,
+      "tag": "0018_condemned_miek",
+      "breakpoints": true
     }
   ]
 }

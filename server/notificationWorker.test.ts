@@ -28,6 +28,34 @@ describe("notification worker policy", () => {
       title: "New inquiry received",
       body: "Question about a listing",
     });
+
+    expect(
+      notificationCopy({
+        eventType: "VENDOR_APPROVED",
+        idempotencyKey: "vendor:1",
+        recipientUserId: 5,
+        entityType: "vendor",
+        entityId: 1,
+        payload: { businessName: "Ankara Arts" },
+      })
+    ).toEqual({
+      title: "Vendor application approved",
+      body: "Your vendor profile is now approved.",
+    });
+
+    expect(
+      notificationCopy({
+        eventType: "REVIEW_MODERATED",
+        idempotencyKey: "rev:1",
+        recipientUserId: 10,
+        entityType: "review",
+        entityId: 4,
+        payload: { status: "approved" },
+      })
+    ).toEqual({
+      title: "Review moderation update",
+      body: "Your review status has changed.",
+    });
   });
 
   it("uses bounded exponential retry delays", () => {

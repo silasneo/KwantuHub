@@ -19,9 +19,12 @@ export const users = mysqlTable("users", {
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: varchar("name", { length: 255 }),
   email: varchar("email", { length: 320 }),
+  phone: varchar("phone", { length: 32 }),
   passwordHash: varchar("passwordHash", { length: 255 }),
   avatarUrl: varchar("avatarUrl", { length: 1024 }),
   notificationPreferences: json("notificationPreferences"),
+  emailVerifiedAt: timestamp("emailVerifiedAt"),
+  phoneVerifiedAt: timestamp("phoneVerifiedAt"),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["buyer", "vendor", "admin"])
     .default("buyer")
@@ -71,6 +74,29 @@ export const vendorProfiles = mysqlTable("vendorProfiles", {
     .default("pending")
     .notNull(),
   approvedAt: timestamp("approvedAt"),
+  standardsAcknowledgedAt: timestamp("standardsAcknowledgedAt"),
+  identityStatus: mysqlEnum("identityStatus", [
+    "unverified",
+    "pending",
+    "verified",
+    "rejected",
+    "expired",
+  ])
+    .default("unverified")
+    .notNull(),
+  identityVerifiedAt: timestamp("identityVerifiedAt"),
+  residenceStatus: mysqlEnum("residenceStatus", [
+    "unverified",
+    "pending",
+    "verified",
+    "rejected",
+    "expired",
+  ])
+    .default("unverified")
+    .notNull(),
+  residenceCountry: varchar("residenceCountry", { length: 2 }),
+  residenceVerifiedAt: timestamp("residenceVerifiedAt"),
+  verificationBadgeSummary: json("verificationBadgeSummary"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -177,10 +203,43 @@ export const inquiries = mysqlTable("inquiries", {
     .notNull()
     .references(() => vendorProfiles.id, { onDelete: "cascade" }),
   subject: varchar("subject", { length: 255 }).notNull(),
-  status: mysqlEnum("status", ["open", "closed"]).default("open").notNull(),
+  status: mysqlEnum("status", ["open", "closed", "archived"])
+    .default("open")
+    .notNull(),
+  leadStage: mysqlEnum("leadStage", [
+    "new_inquiry",
+    "contacted",
+    "quote_sent",
+    "deal_won",
+    "deal_lost",
+  ])
+    .default("new_inquiry")
+    .notNull(),
+  vendorPrivateNotes: text("vendorPrivateNotes"),
+  followUpDate: timestamp("followUpDate"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
+
+export const inquiryLeadHistory = mysqlTable(
+  "inquiryLeadHistory",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    inquiryId: int("inquiryId")
+      .notNull()
+      .references(() => inquiries.id, { onDelete: "cascade" }),
+    fromStage: varchar("fromStage", { length: 64 }).notNull(),
+    toStage: varchar("toStage", { length: 64 }).notNull(),
+    changedByUserId: int("changedByUserId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("inquiry_lead_history_inquiry_idx").on(table.inquiryId, table.createdAt),
+  ]
+);
 
 export const messages = mysqlTable("messages", {
   id: int("id").autoincrement().primaryKey(),
@@ -192,6 +251,10 @@ export const messages = mysqlTable("messages", {
     .references(() => users.id, { onDelete: "cascade" }),
   body: text("body").notNull(),
   readAt: timestamp("readAt"),
+  isHidden: boolean("isHidden").default(false).notNull(),
+  hiddenAt: timestamp("hiddenAt"),
+  hiddenBy: int("hiddenBy").references(() => users.id, { onDelete: "set null" }),
+  hiddenReason: text("hiddenReason"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
@@ -247,6 +310,42 @@ export const disputes = mysqlTable("disputes", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export const conversationReports = mysqlTable(
+  "conversationReports",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    inquiryId: int("inquiryId")
+      .notNull()
+      .references(() => inquiries.id, { onDelete: "cascade" }),
+    linkedDisputeId: int("linkedDisputeId").references(() => disputes.id, {
+      onDelete: "set null",
+    }),
+    reporterId: int("reporterId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    reason: varchar("reason", { length: 120 }).notNull(),
+    details: text("details"),
+    status: mysqlEnum("status", ["open", "reviewed", "dismissed", "actioned"])
+      .default("open")
+      .notNull(),
+    resolutionNote: text("resolutionNote"),
+    reviewedBy: int("reviewedBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: timestamp("reviewedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("conversation_reports_status_created_idx").on(
+      table.status,
+      table.createdAt
+    ),
+    index("conversation_reports_inquiry_idx").on(table.inquiryId, table.createdAt),
+    index("conversation_reports_reporter_idx").on(table.reporterId, table.createdAt),
+  ]
+);
+
 export const systemSettings = mysqlTable("systemSettings", {
   id: int("id").autoincrement().primaryKey(),
   settingKey: varchar("settingKey", { length: 128 }).notNull().unique(),
@@ -262,6 +361,8 @@ export const moderationRecords = mysqlTable("moderationRecords", {
     "listing",
     "review",
     "message",
+    "conversation",
+    "notification",
     "dispute",
   ]).notNull(),
   entityId: varchar("entityId", { length: 64 }).notNull(),
@@ -270,6 +371,146 @@ export const moderationRecords = mysqlTable("moderationRecords", {
   reason: text("reason"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
+
+export const verificationChallenges = mysqlTable(
+  "verificationChallenges",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    channel: mysqlEnum("channel", ["email", "phone"]).notNull(),
+    purpose: mysqlEnum("purpose", ["email_ownership", "phone_ownership"]).notNull(),
+    targetHash: varchar("targetHash", { length: 128 }).notNull(),
+    codeCiphertext: varchar("codeCiphertext", { length: 512 }).notNull(),
+    attempts: int("attempts").default(0).notNull(),
+    maxAttempts: int("maxAttempts").default(5).notNull(),
+    lastSentAt: timestamp("lastSentAt").defaultNow().notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    consumedAt: timestamp("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("verification_challenge_user_channel_idx").on(
+      table.userId,
+      table.channel,
+      table.createdAt
+    ),
+    index("verification_challenge_target_idx").on(
+      table.channel,
+      table.targetHash,
+      table.createdAt
+    ),
+  ]
+);
+
+export const abuseSignals = mysqlTable(
+  "abuseSignals",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").references(() => users.id, { onDelete: "set null" }),
+    signalType: mysqlEnum("signalType", [
+      "turnstile_failed",
+      "otp_failed",
+      "otp_rate_limited",
+      "contact_reveal_rate_limited",
+      "inquiry_rate_limited",
+      "suspicious_contact_reveal",
+    ]).notNull(),
+    ipHash: varchar("ipHash", { length: 128 }),
+    metadata: json("metadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    resolvedAt: timestamp("resolvedAt"),
+    resolvedBy: int("resolvedBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  table => [
+    index("abuse_signal_type_created_idx").on(table.signalType, table.createdAt),
+    index("abuse_signal_user_created_idx").on(table.userId, table.createdAt),
+  ]
+);
+
+export const vendorVerificationSessions = mysqlTable(
+  "vendorVerificationSessions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    vendorId: int("vendorId")
+      .notNull()
+      .references(() => vendorProfiles.id, { onDelete: "cascade" }),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: mysqlEnum("provider", ["didit", "veriff", "sumsub", "manual"]).notNull(),
+    providerSessionId: varchar("providerSessionId", { length: 255 }).unique(),
+    sessionType: mysqlEnum("sessionType", [
+      "identity_document",
+      "liveness",
+      "proof_of_residence",
+      "combined_na_vendor",
+    ]).notNull(),
+    status: mysqlEnum("status", [
+      "created",
+      "submitted",
+      "in_review",
+      "approved",
+      "declined",
+      "expired",
+      "abandoned",
+    ])
+      .default("created")
+      .notNull(),
+    countryCode: varchar("countryCode", { length: 2 }),
+    consentGivenAt: timestamp("consentGivenAt"),
+    declinedReason: text("declinedReason"),
+    reviewerNotes: text("reviewerNotes"),
+    reviewedBy: int("reviewedBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: timestamp("reviewedAt"),
+    expiresAt: timestamp("expiresAt"),
+    metadata: json("metadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("vendor_verification_vendor_created_idx").on(
+      table.vendorId,
+      table.createdAt
+    ),
+    index("vendor_verification_status_idx").on(table.status, table.createdAt),
+    index("vendor_verification_provider_session_idx").on(
+      table.provider,
+      table.providerSessionId
+    ),
+  ]
+);
+
+export const vendorVerificationEvidence = mysqlTable(
+  "vendorVerificationEvidence",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    sessionId: int("sessionId")
+      .notNull()
+      .references(() => vendorVerificationSessions.id, { onDelete: "cascade" }),
+    evidenceType: mysqlEnum("evidenceType", [
+      "government_id",
+      "utility_bill",
+      "bank_statement",
+      "lease_agreement",
+      "business_registration",
+    ]).notNull(),
+    fileStoragePath: varchar("fileStoragePath", { length: 1024 }).notNull(),
+    redactedSummary: varchar("redactedSummary", { length: 255 }),
+    retentionExpiresAt: timestamp("retentionExpiresAt"),
+    deletedAt: timestamp("deletedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("verification_evidence_session_idx").on(table.sessionId, table.createdAt),
+  ]
+);
 
 export const notificationPreferences = mysqlTable(
   "notificationPreferences",
@@ -284,6 +525,7 @@ export const notificationPreferences = mysqlTable(
     emailReplies: boolean("emailReplies").default(true).notNull(),
     emailResolutions: boolean("emailResolutions").default(false).notNull(),
     emailAccount: boolean("emailAccount").default(true).notNull(),
+    emailSavedSearches: boolean("emailSavedSearches").default(false).notNull(),
     quietHoursStart: varchar("quietHoursStart", { length: 5 }),
     quietHoursEnd: varchar("quietHoursEnd", { length: 5 }),
     timezone: varchar("timezone", { length: 64 }),
@@ -309,6 +551,9 @@ export const notifications = mysqlTable(
       "vendor_approved",
       "vendor_rejected",
       "review_moderated",
+      "email_address_action_required",
+      "email_delivery_alert",
+      "contact_verification_otp",
     ]).notNull(),
     entityType: varchar("entityType", { length: 64 }).notNull(),
     entityId: int("entityId"),
@@ -377,6 +622,9 @@ export const notificationOutbox = mysqlTable(
     attempts: int("attempts").default(0).notNull(),
     availableAt: timestamp("availableAt").defaultNow().notNull(),
     lockedAt: timestamp("lockedAt"),
+    lockToken: varchar("lockToken", { length: 120 }),
+    leaseExpiresAt: timestamp("leaseExpiresAt"),
+    lastAttemptAt: timestamp("lastAttemptAt"),
     processedAt: timestamp("processedAt"),
     lastError: text("lastError"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -386,6 +634,11 @@ export const notificationOutbox = mysqlTable(
     index("notification_outbox_status_available_idx").on(
       table.status,
       table.availableAt
+    ),
+    index("notification_outbox_lease_idx").on(
+      table.status,
+      table.availableAt,
+      table.leaseExpiresAt
     ),
     index("notification_outbox_recipient_created_idx").on(
       table.recipientUserId,
@@ -430,6 +683,9 @@ export const notificationDeliveries = mysqlTable(
     nextAttemptAt: timestamp("nextAttemptAt"),
     sentAt: timestamp("sentAt"),
     deliveredAt: timestamp("deliveredAt"),
+    providerEventAt: timestamp("providerEventAt"),
+    providerEventType: varchar("providerEventType", { length: 80 }),
+    lastProviderEventId: varchar("lastProviderEventId", { length: 255 }),
     failureCode: varchar("failureCode", { length: 120 }),
     failureReason: text("failureReason"),
     providerPayload: json("providerPayload"),
@@ -440,6 +696,11 @@ export const notificationDeliveries = mysqlTable(
     index("notification_delivery_provider_message_idx").on(
       table.provider,
       table.providerMessageId
+    ),
+    index("notification_delivery_provider_status_idx").on(
+      table.provider,
+      table.providerMessageId,
+      table.status
     ),
     index("notification_delivery_recipient_channel_status_idx").on(
       table.recipientUserId,
@@ -455,6 +716,152 @@ export const notificationDeliveries = mysqlTable(
       table.outboxId,
       table.channel
     ),
+  ]
+);
+
+export const notificationWebhookEvents = mysqlTable(
+  "notificationWebhookEvents",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    provider: varchar("provider", { length: 64 }).notNull(),
+    providerEventId: varchar("providerEventId", { length: 255 }).notNull(),
+    providerMessageId: varchar("providerMessageId", { length: 255 }),
+    providerEventType: varchar("providerEventType", { length: 80 }).notNull(),
+    signatureVerified: boolean("signatureVerified").default(false).notNull(),
+    payloadHash: varchar("payloadHash", { length: 128 }).notNull(),
+    payload: json("payload"),
+    processingStatus: mysqlEnum("processingStatus", [
+      "received",
+      "processed",
+      "ignored",
+      "failed",
+    ])
+      .default("received")
+      .notNull(),
+    processingAttempts: int("processingAttempts").default(0).notNull(),
+    receivedAt: timestamp("receivedAt").defaultNow().notNull(),
+    providerEventAt: timestamp("providerEventAt"),
+    processedAt: timestamp("processedAt"),
+    lastError: text("lastError"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    uniqueIndex("notification_webhook_provider_event_unique").on(
+      table.provider,
+      table.providerEventId
+    ),
+    index("notification_webhook_message_type_idx").on(
+      table.providerMessageId,
+      table.providerEventType
+    ),
+    index("notification_webhook_status_received_idx").on(
+      table.processingStatus,
+      table.receivedAt
+    ),
+    index("notification_webhook_payload_hash_idx").on(table.payloadHash),
+  ]
+);
+
+export const notificationSuppressions = mysqlTable(
+  "notificationSuppressions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").references(() => users.id, { onDelete: "set null" }),
+    email: varchar("email", { length: 320 }).notNull(),
+    provider: varchar("provider", { length: 64 }).notNull(),
+    reason: mysqlEnum("reason", [
+      "hard_bounce",
+      "complaint",
+      "unsubscribe",
+      "manual",
+    ]).notNull(),
+    sourceEventId: varchar("sourceEventId", { length: 255 }),
+    active: boolean("active").default(true).notNull(),
+    suppressedAt: timestamp("suppressedAt").defaultNow().notNull(),
+    releasedAt: timestamp("releasedAt"),
+    releaseReason: varchar("releaseReason", { length: 255 }),
+    metadata: json("metadata"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    uniqueIndex("notification_suppression_provider_email_reason_active_unique").on(
+      table.provider,
+      table.email,
+      table.reason,
+      table.active
+    ),
+    index("notification_suppression_email_active_idx").on(
+      table.email,
+      table.active
+    ),
+    index("notification_suppression_user_active_idx").on(
+      table.userId,
+      table.active
+    ),
+    index("notification_suppression_provider_event_idx").on(
+      table.provider,
+      table.sourceEventId
+    ),
+  ]
+);
+
+export const savedSearches = mysqlTable(
+  "savedSearches",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 140 }).notNull(),
+    query: varchar("query", { length: 255 }),
+    categoryId: int("categoryId").references(() => categories.id, {
+      onDelete: "set null",
+    }),
+    listingType: mysqlEnum("listingType", ["product", "service"]),
+    location: varchar("location", { length: 160 }),
+    minPrice: int("minPrice"),
+    maxPrice: int("maxPrice"),
+    remoteOnly: boolean("remoteOnly").default(false).notNull(),
+    verifiedVendorOnly: boolean("verifiedVendorOnly").default(false).notNull(),
+    alertFrequency: mysqlEnum("alertFrequency", ["immediate", "daily", "off"])
+      .default("off")
+      .notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    lastAlertedAt: timestamp("lastAlertedAt"),
+    lastMatchedListingId: int("lastMatchedListingId"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("saved_search_user_active_idx").on(table.userId, table.isActive),
+    index("saved_search_frequency_active_idx").on(
+      table.alertFrequency,
+      table.isActive
+    ),
+  ]
+);
+
+export const savedSearchMatches = mysqlTable(
+  "savedSearchMatches",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    savedSearchId: int("savedSearchId")
+      .notNull()
+      .references(() => savedSearches.id, { onDelete: "cascade" }),
+    listingId: int("listingId")
+      .notNull()
+      .references(() => listings.id, { onDelete: "cascade" }),
+    alertDispatched: boolean("alertDispatched").default(false).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    uniqueIndex("saved_search_listing_match_unique").on(
+      table.savedSearchId,
+      table.listingId
+    ),
+    index("saved_search_match_search_idx").on(table.savedSearchId, table.createdAt),
   ]
 );
 
@@ -488,3 +895,21 @@ export type NotificationOutbox = typeof notificationOutbox.$inferSelect;
 export type InsertNotificationOutbox = typeof notificationOutbox.$inferInsert;
 export type NotificationDelivery = typeof notificationDeliveries.$inferSelect;
 export type InsertNotificationDelivery = typeof notificationDeliveries.$inferInsert;
+export type NotificationWebhookEvent = typeof notificationWebhookEvents.$inferSelect;
+export type InsertNotificationWebhookEvent = typeof notificationWebhookEvents.$inferInsert;
+export type NotificationSuppression = typeof notificationSuppressions.$inferSelect;
+export type InsertNotificationSuppression = typeof notificationSuppressions.$inferInsert;
+export type VerificationChallenge = typeof verificationChallenges.$inferSelect;
+export type InsertVerificationChallenge = typeof verificationChallenges.$inferInsert;
+export type VendorVerificationSession = typeof vendorVerificationSessions.$inferSelect;
+export type InsertVendorVerificationSession = typeof vendorVerificationSessions.$inferInsert;
+export type VendorVerificationEvidence = typeof vendorVerificationEvidence.$inferSelect;
+export type InsertVendorVerificationEvidence = typeof vendorVerificationEvidence.$inferInsert;
+export type SavedSearch = typeof savedSearches.$inferSelect;
+export type InsertSavedSearch = typeof savedSearches.$inferInsert;
+export type SavedSearchMatch = typeof savedSearchMatches.$inferSelect;
+export type InsertSavedSearchMatch = typeof savedSearchMatches.$inferInsert;
+export type InquiryLeadHistory = typeof inquiryLeadHistory.$inferSelect;
+export type InsertInquiryLeadHistory = typeof inquiryLeadHistory.$inferInsert;
+export type AbuseSignal = typeof abuseSignals.$inferSelect;
+export type InsertAbuseSignal = typeof abuseSignals.$inferInsert;

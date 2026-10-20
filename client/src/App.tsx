@@ -17,6 +17,8 @@ import UserProfile from "./pages/UserProfile";
 import AboutPage from "./pages/About";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/NotFound";
+import { PrivacyPolicyPage, TermsOfServicePage } from "./pages/LegalPages";
+import SupportPage from "./pages/SupportPage";
 
 function Router() {
   return (
@@ -34,6 +36,9 @@ function Router() {
       <Route path="/admin" component={AdminDashboard} />
       <Route path="/about" component={AboutPage} />
       <Route path="/login" component={LoginPage} />
+      <Route path="/privacy" component={PrivacyPolicyPage} />
+      <Route path="/terms" component={TermsOfServicePage} />
+      <Route path="/support" component={SupportPage} />
       <Route component={NotFound} />
     </Switch>
   );

@@ -144,7 +144,7 @@ export async function getAllVendors() {
         )
         .limit(6);
       return {
-        ...vendor,
+        ...toPublicVendorProfile(vendor),
         user: { name: user.name, avatarUrl: user.avatarUrl },
         storefront,
         listingCount: vendorListings.length,
@@ -152,6 +152,25 @@ export async function getAllVendors() {
       };
     })
   );
+}
+
+/**
+ * Public vendor projection used by directory, storefront, and buyer-facing
+ * discovery responses. Contact channels and verification evidence are exposed
+ * only through authenticated contact-reveal or vendor verification flows.
+ */
+export function toPublicVendorProfile(vendor: typeof vendorProfiles.$inferSelect) {
+  return {
+    id: vendor.id,
+    businessName: vendor.businessName,
+    description: vendor.description,
+    location: vendor.location,
+    serviceArea: vendor.serviceArea,
+    remoteAvailable: vendor.remoteAvailable,
+    website: vendor.website,
+    approvalStatus: vendor.approvalStatus,
+    approvedAt: vendor.approvedAt,
+  };
 }
 
 export async function getCategories() {
@@ -534,7 +553,7 @@ export async function getStorefrontBySlug(slug: string) {
 
   return {
     ...sf[0],
-    vendor: vendor[0] || null,
+    vendor: vendor[0] ? toPublicVendorProfile(vendor[0]) : null,
     listings: enrichedListings,
   };
 }

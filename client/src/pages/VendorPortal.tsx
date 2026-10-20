@@ -1,8 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
+import { NotificationCenter } from "@/components/NotificationCenter";
+import { NotificationPreferences } from "@/components/NotificationPreferences";
+import { ContactVerification } from "@/components/ContactVerification";
+import { VendorVerificationCenter } from "@/components/VendorVerificationCenter";
+import TurnstileField from "@/components/TurnstileField";
+
+function formatRelativeTime(value: Date | string | null) {
+  if (!value) return "No messages yet";
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 60) return "Just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
 
 type ContactField = {
   label: string;
@@ -26,12 +40,21 @@ export default function VendorPortal() {
   const [newLocation, setNewLocation] = useState("");
   const [newRemote, setNewRemote] = useState(false);
   const [replyText, setReplyText] = useState<Record<number, string>>({});
+  const [leadNotes, setLeadNotes] = useState<Record<number, string>>({});
+  const [followUpDates, setFollowUpDates] = useState<Record<number, string>>({});
   const [phone, setPhone] = useState("");
   const [whatsapp, setWhatsapp] = useState("");
   const [imessage, setImessage] = useState("");
   const [instagram, setInstagram] = useState("");
   const [contactEmail, setContactEmail] = useState("");
   const [website, setWebsite] = useState("");
+  const [serviceArea, setServiceArea] = useState("");
+  const [remoteAvailable, setRemoteAvailable] = useState(false);
+  const [analyticsCategory, setAnalyticsCategory] = useState("");
+  const [analyticsFrom, setAnalyticsFrom] = useState("");
+  const [analyticsTo, setAnalyticsTo] = useState("");
+  const [standardsAcknowledged, setStandardsAcknowledged] = useState(false);
+  const [publishTurnstileToken, setPublishTurnstileToken] = useState<string>();
 
   const utils = trpc.useUtils();
   const { data: profile } = trpc.vendor.getProfile.useQuery(undefined, {
@@ -43,11 +66,19 @@ export default function VendorPortal() {
   const { data: inquiries } = trpc.vendor.inquiries.useQuery(undefined, {
     enabled: isAuthenticated,
   });
-  const { data: analytics } = trpc.vendor.analytics.useQuery(undefined, {
+  const analyticsInput = useMemo(() => ({
+    categoryId: analyticsCategory ? Number(analyticsCategory) : undefined,
+    from: analyticsFrom || undefined,
+    to: analyticsTo || undefined,
+  }), [analyticsCategory, analyticsFrom, analyticsTo]);
+  const { data: analytics } = trpc.vendor.analytics.useQuery(analyticsInput, {
     enabled: isAuthenticated,
   });
   const { data: reviews } = trpc.vendor.reviews.useQuery(undefined, {
     enabled: isAuthenticated,
+  });
+  const { data: leadFunnelData } = trpc.vendor.leadFunnel.useQuery(undefined, {
+    enabled: isAuthenticated && activeTab === "inquiries",
   });
   const { data: categories } = trpc.categories.list.useQuery();
 
@@ -59,6 +90,9 @@ export default function VendorPortal() {
     setInstagram(profile.instagram || "");
     setContactEmail(profile.contactEmail || "");
     setWebsite(profile.website || "");
+    setServiceArea(profile.serviceArea || "");
+    setRemoteAvailable(Boolean(profile.remoteAvailable));
+    setStandardsAcknowledged(Boolean(profile.standardsAcknowledgedAt));
   }, [profile]);
 
   const saveListingMutation = trpc.vendor.saveListing.useMutation({
@@ -82,6 +116,19 @@ export default function VendorPortal() {
   const closeInquiryMutation = trpc.vendor.closeInquiry.useMutation({
     onSuccess: () => utils.vendor.inquiries.invalidate(),
   });
+  const reopenInquiryMutation = trpc.vendor.reopenInquiry.useMutation({
+    onSuccess: () => utils.vendor.inquiries.invalidate(),
+  });
+  const archiveInquiryMutation = trpc.vendor.archiveInquiry.useMutation({
+    onSuccess: () => utils.vendor.inquiries.invalidate(),
+  });
+  const unarchiveInquiryMutation = trpc.vendor.unarchiveInquiry.useMutation({
+    onSuccess: () => utils.vendor.inquiries.invalidate(),
+  });
+  const updateLeadStageMutation = trpc.vendor.updateLeadStage.useMutation({
+    onSuccess: () => utils.vendor.inquiries.invalidate(),
+  });
+  const reportConversationMutation = trpc.vendor.reportConversation.useMutation();
 
   const saveProfileMutation = trpc.vendor.saveProfile.useMutation({
     onSuccess: () => utils.vendor.getProfile.invalidate(),
@@ -181,6 +228,10 @@ export default function VendorPortal() {
               View Public Storefront →
             </Link>
           )}
+        </div>
+
+        <div className="mb-8 max-w-2xl">
+          <NotificationCenter mode="panel" />
         </div>
 
         {!isApproved && (
@@ -336,6 +387,13 @@ export default function VendorPortal() {
                   />
                 </div>
 
+                <TurnstileField action="publish_listing" onToken={setPublishTurnstileToken} />
+                {saveListingMutation.error && (
+                  <p className="form-error text-xs text-red-700">
+                    {saveListingMutation.error.message}
+                  </p>
+                )}
+
                 <button
                   onClick={() => {
                     if (!newTitle || !newDesc || !newCategory) return;
@@ -346,6 +404,7 @@ export default function VendorPortal() {
                       listingType: newType,
                       priceIndication: newPrice || "Inquire",
                       status: "published",
+                      turnstileToken: publishTurnstileToken,
                     });
                   }}
                   disabled={
@@ -420,6 +479,45 @@ export default function VendorPortal() {
         {/* Inquiries Tab */}
         {activeTab === "inquiries" && (
           <div className="space-y-6">
+            {/* Vendor Lead Conversion Funnel */}
+            <div className="bg-white border border-[#d9d0c4] p-5 rounded space-y-3">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h3 className="font-serif font-bold text-xl text-[#0a0a0a]">
+                    Your Inquiry Lead Funnel
+                  </h3>
+                  <p className="text-xs text-[#68635c] font-serif">
+                    Track buyer engagement from initial question to completed sale.
+                  </p>
+                </div>
+                <strong className="text-xs font-bold uppercase tracking-wider text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded">
+                  {Math.round((leadFunnelData?.conversionRate || 0) * 100)}% Win Rate
+                </strong>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-1 text-center text-xs">
+                <div className="p-2.5 bg-[#faf6f0] border border-[#eee8df] rounded">
+                  <span className="text-[10px] font-bold uppercase text-[#68635c] block">New</span>
+                  <strong className="font-serif text-base text-[#0a0a0a] block mt-0.5">{leadFunnelData?.counts.new_inquiry || 0}</strong>
+                </div>
+                <div className="p-2.5 bg-[#faf6f0] border border-[#eee8df] rounded">
+                  <span className="text-[10px] font-bold uppercase text-[#68635c] block">Contacted</span>
+                  <strong className="font-serif text-base text-[#0a0a0a] block mt-0.5">{leadFunnelData?.counts.contacted || 0}</strong>
+                </div>
+                <div className="p-2.5 bg-[#faf6f0] border border-[#eee8df] rounded">
+                  <span className="text-[10px] font-bold uppercase text-[#68635c] block">Quotes Sent</span>
+                  <strong className="font-serif text-base text-[#0a0a0a] block mt-0.5">{leadFunnelData?.counts.quote_sent || 0}</strong>
+                </div>
+                <div className="p-2.5 bg-[#faf6f0] border border-[#eee8df] rounded">
+                  <span className="text-[10px] font-bold uppercase text-emerald-800 block">Deals Won</span>
+                  <strong className="font-serif text-base text-emerald-800 block mt-0.5">{leadFunnelData?.counts.deal_won || 0}</strong>
+                </div>
+                <div className="p-2.5 bg-[#faf6f0] border border-[#eee8df] rounded">
+                  <span className="text-[10px] font-bold uppercase text-[#8c827a] block">Lost / Closed</span>
+                  <strong className="font-serif text-base text-[#8c827a] block mt-0.5">{leadFunnelData?.counts.deal_lost || 0}</strong>
+                </div>
+              </div>
+            </div>
+
             {(inquiries?.length || 0) === 0 ? (
               <div className="bg-white border border-[#d9d0c4] p-12 rounded text-center text-[#68635c] font-serif">
                 No customer inquiries yet. Buyer questions about your items will
@@ -460,6 +558,23 @@ export default function VendorPortal() {
                     </div>
                   </div>
 
+                  <p className="mb-4 text-xs font-bold uppercase tracking-wider text-[#68635c]">
+                    {inq.conversationState === "awaiting_vendor"
+                      ? "Awaiting your reply"
+                      : inq.conversationState === "awaiting_buyer"
+                        ? "Awaiting buyer reply"
+                        : inq.conversationState === "resolved"
+                          ? "Conversation resolved"
+                          : inq.conversationState === "archived"
+                            ? "Conversation archived"
+                            : "Conversation open"}
+                  </p>
+                  <p className="mb-4 text-xs text-[#888]">
+                    Last activity {formatRelativeTime(inq.lastMessageAt)}
+                    {inq.responseTimeSeconds !== null &&
+                      ` · First response ${Math.max(1, Math.round(inq.responseTimeSeconds / 60))}m`}
+                  </p>
+
                   <div className="space-y-3 mb-6">
                     {inq.messages.map(m => (
                       <div
@@ -476,6 +591,9 @@ export default function VendorPortal() {
                             : inq.buyer.name || "Buyer"}
                         </span>
                         <p className="font-serif text-[#333]">{m.body}</p>
+                        <span className="mt-1 block text-[10px] text-[#999]">
+                          {formatRelativeTime(m.createdAt)}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -490,6 +608,89 @@ export default function VendorPortal() {
                       Mark messages read
                     </button>
                   )}
+
+                  {/* Vendor Lead Stage & Private Notes (Protected - Never Exposed to Buyers) */}
+                  <div className="my-4 p-4 bg-[#faf6f0] border border-[#eee8df] rounded space-y-3">
+                    <div className="flex flex-wrap justify-between items-center gap-2">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#68635c] block">
+                          Lead Stage (Vendor Only)
+                        </span>
+                        <select
+                          value={inq.leadStage || "new_inquiry"}
+                          onChange={e =>
+                            updateLeadStageMutation.mutate({
+                              inquiryId: inq.id,
+                              stage: e.target.value as any,
+                              notes: leadNotes[inq.id] !== undefined ? leadNotes[inq.id] : (inq.vendorPrivateNotes || undefined),
+                            })
+                          }
+                          disabled={updateLeadStageMutation.isPending}
+                          className="text-xs font-serif border border-[#d9d0c4] rounded px-2.5 py-1 bg-white mt-1"
+                        >
+                          <option value="new_inquiry">New Inquiry</option>
+                          <option value="contacted">Contacted</option>
+                          <option value="quote_sent">Quote / Details Sent</option>
+                          <option value="deal_won">Deal Won (Success)</option>
+                          <option value="deal_lost">Deal Lost / Closed</option>
+                        </select>
+                      </div>
+                      {inq.leadStage === "deal_won" && (
+                        <span className="text-xs font-bold uppercase tracking-wider text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded">
+                          ★ Deal Won
+                        </span>
+                      )}
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#68635c] block">
+                          Follow-up Date
+                        </span>
+                        <input
+                          type="date"
+                          value={followUpDates[inq.id] || (inq.followUpDate ? new Date(inq.followUpDate).toISOString().slice(0, 10) : "")}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setFollowUpDates(prev => ({ ...prev, [inq.id]: val }));
+                            if (val) {
+                              updateLeadStageMutation.mutate({
+                                inquiryId: inq.id,
+                                stage: (inq.leadStage as any) || "new_inquiry",
+                                followUpDate: new Date(val),
+                              });
+                            }
+                          }}
+                          className="text-xs border border-[#d9d0c4] rounded px-2.5 py-1 bg-white mt-1"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-[#68635c] block mb-1">
+                        Private Vendor Notes (Buyers never see this)
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={leadNotes[inq.id] !== undefined ? leadNotes[inq.id] : (inq.vendorPrivateNotes || "")}
+                          onChange={e => setLeadNotes(prev => ({ ...prev, [inq.id]: e.target.value }))}
+                          placeholder="e.g. Buyer asked for custom dimensions, offered $120..."
+                          className="flex-1 text-xs border border-[#d9d0c4] rounded px-3 py-1.5 bg-white font-serif"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateLeadStageMutation.mutate({
+                              inquiryId: inq.id,
+                              stage: (inq.leadStage as any) || "new_inquiry",
+                              notes: leadNotes[inq.id] || "",
+                            })
+                          }
+                          disabled={updateLeadStageMutation.isPending}
+                          className="text-[11px] font-bold uppercase tracking-wider text-[#0a0a0a] border border-[#d9d0c4] px-3 py-1.5 rounded hover:bg-white"
+                        >
+                          Save Note
+                        </button>
+                      </div>
+                    </div>
+                  </div>
 
                   {inq.status === "open" && (
                     <div className="space-y-3">
@@ -520,6 +721,59 @@ export default function VendorPortal() {
                       </button>
                     </div>
                   )}
+                  {inq.status === "closed" && (
+                    <div className="flex flex-wrap gap-4">
+                      <button
+                        type="button"
+                        onClick={() => reopenInquiryMutation.mutate({ inquiryId: inq.id })}
+                        disabled={reopenInquiryMutation.isPending}
+                        className="text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline disabled:opacity-50"
+                      >
+                        Reopen conversation
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => archiveInquiryMutation.mutate({ inquiryId: inq.id })}
+                        disabled={archiveInquiryMutation.isPending}
+                        className="text-xs font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466] disabled:opacity-50"
+                      >
+                        Archive
+                      </button>
+                    </div>
+                  )}
+                  {inq.status === "open" && (
+                    <button
+                      type="button"
+                      onClick={() => archiveInquiryMutation.mutate({ inquiryId: inq.id })}
+                      disabled={archiveInquiryMutation.isPending}
+                      className="text-xs font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466] disabled:opacity-50"
+                    >
+                      Archive conversation
+                    </button>
+                  )}
+                  {inq.status === "archived" && (
+                    <button
+                      type="button"
+                      onClick={() => unarchiveInquiryMutation.mutate({ inquiryId: inq.id })}
+                      disabled={unarchiveInquiryMutation.isPending}
+                      className="text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline disabled:opacity-50"
+                    >
+                      Unarchive conversation
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const reason = window.prompt("Why are you reporting this conversation?");
+                      if (reason?.trim()) {
+                        reportConversationMutation.mutate({ inquiryId: inq.id, reason: reason.trim() });
+                      }
+                    }}
+                    disabled={reportConversationMutation.isPending}
+                    className="mt-4 block text-xs font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466] disabled:opacity-50"
+                  >
+                    Report conversation
+                  </button>
                 </div>
               ))
             )}
@@ -535,6 +789,11 @@ export default function VendorPortal() {
               <h2 className="font-serif text-3xl font-bold text-[#0a0a0a]">
                 How your catalog is moving
               </h2>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 rounded border border-[#d9d0c4] bg-white p-4">
+              <select value={analyticsCategory} onChange={event => setAnalyticsCategory(event.target.value)} className="text-xs border border-[#d9d0c4] rounded px-2 py-2 bg-[#faf6f0]"><option value="">All categories</option>{categories?.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+              <input type="date" value={analyticsFrom} onChange={event => setAnalyticsFrom(event.target.value)} className="text-xs border border-[#d9d0c4] rounded px-2 py-2 bg-[#faf6f0]" aria-label="Analytics from date" />
+              <input type="date" value={analyticsTo} onChange={event => setAnalyticsTo(event.target.value)} className="text-xs border border-[#d9d0c4] rounded px-2 py-2 bg-[#faf6f0]" aria-label="Analytics to date" />
             </div>
             <div className="portal-metrics">
               <div className="portal-metric">
@@ -557,11 +816,34 @@ export default function VendorPortal() {
                 <strong>{analytics?.listings || 0}</strong>
                 <span>Total listings</span>
               </div>
+              <div className="portal-metric">
+                <strong>{analytics?.unread || 0}</strong>
+                <span>Unread leads</span>
+              </div>
+              <div className="portal-metric">
+                <strong>{analytics ? `${Math.round((analytics.responseRate || 0) * 100)}%` : "0%"}</strong>
+                <span>Response rate</span>
+              </div>
+              <div className="portal-metric">
+                <strong>{analytics?.resolved || 0}</strong>
+                <span>Resolved inquiries</span>
+              </div>
+              <div className="portal-metric">
+                <strong>{analytics?.averageResponseSeconds ? `${Math.round(analytics.averageResponseSeconds / 3600)}h` : "—"}</strong>
+                <span>Avg response time</span>
+              </div>
             </div>
             <div className="bg-white border border-[#d9d0c4] p-6 rounded font-serif text-[#68635c]">
               Engagement signals are recorded when buyers view, save, inquire,
               or reveal a configured contact channel. Use these metrics to
               decide which offerings need a stronger story or new imagery.
+            </div>
+            <div className="bg-white border border-[#d9d0c4] rounded overflow-hidden">
+              <div className="border-b border-[#eee8df] p-5"><h3 className="font-serif text-2xl font-bold text-[#0a0a0a]">Top inquiry listings</h3><p className="text-sm text-[#68635c] font-serif mt-1">Ranked by inquiry volume for the selected scope.</p></div>
+              <div className="divide-y divide-[#eee8df]">
+                {(analytics?.topListings || []).map(item => <div key={item.listingId} className="flex justify-between gap-4 px-5 py-4"><span className="font-serif">{item.title}</span><strong className="text-sm text-[#d71466]">{item.inquiries} inquiries</strong></div>)}
+                {!analytics?.topListings?.length && <p className="px-5 py-6 font-serif text-sm text-[#68635c]">No inquiry activity in this scope yet.</p>}
+              </div>
             </div>
           </section>
         )}
@@ -639,6 +921,21 @@ export default function VendorPortal() {
                   </label>
                 ))}
               </div>
+              <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className="text-xs font-bold uppercase tracking-wider text-[#68635c]">
+                  Service area
+                  <input type="text" value={serviceArea} onChange={event => setServiceArea(event.target.value)} placeholder="e.g. Greater Toronto + remote" className="mt-1 w-full text-sm normal-case tracking-normal border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0] font-serif" />
+                  <span className="mt-1 block text-[11px] font-normal normal-case tracking-normal text-[#888]">Tell buyers where you can deliver or serve.</span>
+                </label>
+                <label className="flex items-start gap-3 text-sm font-serif text-[#333] sm:pt-5">
+                  <input type="checkbox" checked={remoteAvailable} onChange={event => setRemoteAvailable(event.target.checked)} className="mt-1 accent-[#d71466]" />
+                  <span><strong className="block text-xs uppercase tracking-wider text-[#68635c]">Remote delivery available</strong><span className="text-[11px] text-[#888]">Show a clear remote option on your public profile.</span></span>
+                </label>
+              </div>
+              <label className="mt-6 flex items-start gap-3 text-sm font-serif text-[#333]">
+                <input type="checkbox" checked={standardsAcknowledged} onChange={event => setStandardsAcknowledged(event.target.checked)} className="mt-1 accent-[#d71466]" />
+                <span>I confirm that my listings, service area, availability, and contact information are accurate and that I will respond to community inquiries in good faith.</span>
+              </label>
               <button
                 type="button"
                 className="mt-6 text-xs font-bold uppercase tracking-wider text-white brand-gradient px-6 py-3 rounded disabled:opacity-50"
@@ -650,14 +947,15 @@ export default function VendorPortal() {
                     businessName: profile?.businessName || "Vendor",
                     description: profile?.description || undefined,
                     location: profile?.location || undefined,
-                    serviceArea: profile?.serviceArea || undefined,
-                    remoteAvailable: Boolean(profile?.remoteAvailable),
+                    serviceArea: serviceArea || undefined,
+                    remoteAvailable,
                     contactEmail: contactEmail || undefined,
                     website: website || undefined,
                     phone: phone || undefined,
                     whatsapp: whatsapp || undefined,
                     imessage: imessage || undefined,
                     instagram: instagram || undefined,
+                    standardsAcknowledged,
                   })
                 }
               >
@@ -665,6 +963,18 @@ export default function VendorPortal() {
                   ? "Saving…"
                   : "Save contact settings"}
               </button>
+            </div>
+            <div className="bg-white border border-[#d9d0c4] p-6 rounded h-fit">
+              <p className="text-xs font-bold uppercase tracking-widest text-[#d71466] mb-1">
+                Notification settings
+              </p>
+              <h2 className="font-serif text-3xl font-bold text-[#0a0a0a] mb-2">
+                Stay close to buyers.
+              </h2>
+              <p className="font-serif text-sm text-[#68635c] mb-6">
+                Choose how KwantuHub alerts you about inquiries and account activity.
+              </p>
+              <NotificationPreferences />
             </div>
             <div className="bg-[#0a0a0a] text-[#f0e8dc] p-6 rounded h-fit">
               <p className="text-xs font-bold uppercase tracking-widest text-[#fe8129] mb-2">
@@ -678,6 +988,12 @@ export default function VendorPortal() {
                 buyer must request a reveal, and each reveal is rate-limited and
                 recorded in your analytics.
               </p>
+            </div>
+            <div className="lg:col-span-2">
+              <ContactVerification />
+            </div>
+            <div className="lg:col-span-2">
+              <VendorVerificationCenter />
             </div>
           </section>
         )}

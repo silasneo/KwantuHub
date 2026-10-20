@@ -75,9 +75,9 @@ export default function VendorDirectory() {
                           </span>
                         </div>
                       )}
-                      <span className="absolute top-3 right-3 text-[10px] font-bold uppercase tracking-wider bg-white/95 text-green-800 px-2.5 py-1 rounded">
+                      {v.trust?.verified && <span className="absolute top-3 right-3 text-[10px] font-bold uppercase tracking-wider bg-white/95 text-green-800 px-2.5 py-1 rounded">
                         ✓ Verified vendor
-                      </span>
+                      </span>}
                     </div>
 
                     <div className="p-6">
@@ -95,6 +95,16 @@ export default function VendorDirectory() {
                       <p className="text-sm text-[#333] font-serif line-clamp-3 leading-relaxed mb-4">
                         {v.description}
                       </p>
+                      {(v.serviceArea || v.remoteAvailable) && <p className="text-xs text-[#68635c] font-serif mb-3">{v.serviceArea ? `Serves ${v.serviceArea}` : ""}{v.serviceArea && v.remoteAvailable ? " · " : ""}{v.remoteAvailable ? "Remote available" : ""}</p>}
+                      <div className="flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wider">
+                        {v.badges?.contactVerified && <span className="rounded bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-1">Contact verified</span>}
+                        {v.badges?.identityVerified && <span className="rounded bg-blue-50 text-blue-800 border border-blue-200 px-2 py-1">ID verified</span>}
+                        {v.badges?.residenceVerified && <span className="rounded bg-amber-50 text-amber-800 border border-amber-200 px-2 py-1">{v.badges.countryCode} residence verified</span>}
+                        {v.trust?.profileComplete && <span className="rounded bg-[#f0e8dc] px-2 py-1 text-[#68635c]">Complete profile</span>}
+                        {v.trust?.responseRate !== null && v.trust?.responseRate !== undefined && <span className="rounded bg-[#f0e8dc] px-2 py-1 text-[#68635c]">{Math.round(v.trust.responseRate * 100)}% response rate</span>}
+                        {v.trust?.typicalResponseSeconds !== null && v.trust?.typicalResponseSeconds !== undefined && <span className="rounded bg-[#f0e8dc] px-2 py-1 text-[#68635c]">Replies in ~{Math.max(1, Math.round(v.trust.typicalResponseSeconds / 3600))}h</span>}
+                        {v.trust?.recentlyActive && <span className="rounded bg-[#f0e8dc] px-2 py-1 text-[#68635c]">Recently active</span>}
+                      </div>
                     </div>
                   </div>
 

@@ -3,6 +3,19 @@ import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
+import { NotificationCenter } from "@/components/NotificationCenter";
+import { NotificationPreferences } from "@/components/NotificationPreferences";
+import { ContactVerification } from "@/components/ContactVerification";
+import { SavedSearchesCenter } from "@/components/SavedSearchesCenter";
+
+function formatRelativeTime(value: Date | string | null) {
+  if (!value) return "No messages yet";
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 60) return "Just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
 
 export default function BuyerAccount() {
   const { user, isAuthenticated } = useAuth();
@@ -53,6 +66,16 @@ export default function BuyerAccount() {
   const closeInquiry = trpc.buyer.closeInquiry.useMutation({
     onSuccess: () => utils.buyer.inquiries.invalidate(),
   });
+  const reopenInquiry = trpc.buyer.reopenInquiry.useMutation({
+    onSuccess: () => utils.buyer.inquiries.invalidate(),
+  });
+  const archiveInquiry = trpc.buyer.archiveInquiry.useMutation({
+    onSuccess: () => utils.buyer.inquiries.invalidate(),
+  });
+  const unarchiveInquiry = trpc.buyer.unarchiveInquiry.useMutation({
+    onSuccess: () => utils.buyer.inquiries.invalidate(),
+  });
+  const reportConversation = trpc.buyer.reportConversation.useMutation();
   const updateProfile = trpc.auth.updateProfile.useMutation();
   const changePassword = trpc.auth.changePassword.useMutation({
     onSuccess: () => {
@@ -100,6 +123,10 @@ export default function BuyerAccount() {
             Welcome back, {user?.name || "Community Member"}. Manage inquiries
             and saved creations.
           </p>
+        </div>
+
+        <div className="mb-8 max-w-2xl">
+          <NotificationCenter mode="panel" />
         </div>
 
         {/* Tabs */}
@@ -221,6 +248,23 @@ export default function BuyerAccount() {
                     </div>
                   </div>
 
+                  <p className="mb-4 text-xs font-bold uppercase tracking-wider text-[#68635c]">
+                    {inq.conversationState === "awaiting_vendor"
+                      ? "Awaiting vendor reply"
+                      : inq.conversationState === "awaiting_buyer"
+                        ? "Awaiting your reply"
+                        : inq.conversationState === "resolved"
+                          ? "Conversation resolved"
+                          : inq.conversationState === "archived"
+                            ? "Conversation archived"
+                          : "Conversation open"}
+                  </p>
+                  <p className="mb-4 text-xs text-[#888]">
+                    Last activity {formatRelativeTime(inq.lastMessageAt)}
+                    {inq.responseTimeSeconds !== null &&
+                      ` · First vendor response ${Math.max(1, Math.round(inq.responseTimeSeconds / 60))}m`}
+                  </p>
+
                   <div className="space-y-3 pl-2">
                     {inq.messages.map(m => (
                       <div
@@ -237,6 +281,9 @@ export default function BuyerAccount() {
                             : inq.vendor.businessName}
                         </span>
                         <p className="font-serif text-[#333]">{m.body}</p>
+                        <span className="mt-1 block text-[10px] text-[#999]">
+                          {formatRelativeTime(m.createdAt)}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -279,6 +326,59 @@ export default function BuyerAccount() {
                       </button>
                     </div>
                   )}
+                  {inq.status === "closed" && (
+                    <div className="mt-4 flex flex-wrap gap-4">
+                      <button
+                        type="button"
+                        onClick={() => reopenInquiry.mutate({ inquiryId: inq.id })}
+                        disabled={reopenInquiry.isPending}
+                        className="text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline disabled:opacity-50"
+                      >
+                        Reopen conversation
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => archiveInquiry.mutate({ inquiryId: inq.id })}
+                        disabled={archiveInquiry.isPending}
+                        className="text-xs font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466] disabled:opacity-50"
+                      >
+                        Archive
+                      </button>
+                    </div>
+                  )}
+                  {inq.status === "open" && (
+                    <button
+                      type="button"
+                      onClick={() => archiveInquiry.mutate({ inquiryId: inq.id })}
+                      disabled={archiveInquiry.isPending}
+                      className="mt-4 text-xs font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466] disabled:opacity-50"
+                    >
+                      Archive conversation
+                    </button>
+                  )}
+                  {inq.status === "archived" && (
+                    <button
+                      type="button"
+                      onClick={() => unarchiveInquiry.mutate({ inquiryId: inq.id })}
+                      disabled={unarchiveInquiry.isPending}
+                      className="mt-4 text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline disabled:opacity-50"
+                    >
+                      Unarchive conversation
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const reason = window.prompt("Why are you reporting this conversation?");
+                      if (reason?.trim()) {
+                        reportConversation.mutate({ inquiryId: inq.id, reason: reason.trim() });
+                      }
+                    }}
+                    disabled={reportConversation.isPending}
+                    className="mt-4 block text-xs font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466] disabled:opacity-50"
+                  >
+                    Report conversation
+                  </button>
                 </div>
               ))
             )}
@@ -436,48 +536,7 @@ export default function BuyerAccount() {
                 Choose how KwantuHub keeps you informed about your buyer
                 connections.
               </p>
-              <div className="space-y-4 font-serif text-sm text-[#333]">
-                <label className="flex items-center justify-between gap-4 border-b border-[#eee8df] pb-3">
-                  <span>Email me when a vendor replies</span>
-                  <input
-                    type="checkbox"
-                    checked={emailReplies}
-                    onChange={event => setEmailReplies(event.target.checked)}
-                  />
-                </label>
-                <label className="flex items-center justify-between gap-4 border-b border-[#eee8df] pb-3">
-                  <span>Email me about inquiry updates</span>
-                  <input
-                    type="checkbox"
-                    checked={emailInquiries}
-                    onChange={event => setEmailInquiries(event.target.checked)}
-                  />
-                </label>
-                <label className="flex items-center justify-between gap-4 border-b border-[#eee8df] pb-3">
-                  <span>Send occasional product updates</span>
-                  <input
-                    type="checkbox"
-                    checked={productUpdates}
-                    onChange={event => setProductUpdates(event.target.checked)}
-                  />
-                </label>
-              </div>
-              <button
-                type="button"
-                className="mt-6 text-xs font-bold uppercase tracking-wider text-white brand-gradient px-5 py-2.5 rounded"
-                disabled={updateProfile.isPending}
-                onClick={() =>
-                  updateProfile.mutate({
-                    notificationPreferences: {
-                      emailInquiries,
-                      emailReplies,
-                      productUpdates,
-                    },
-                  })
-                }
-              >
-                {updateProfile.isPending ? "Saving…" : "Save preferences"}
-              </button>
+              <NotificationPreferences />
             </section>
 
             <section className="bg-white border border-[#d9d0c4] p-6 rounded">
@@ -527,6 +586,12 @@ export default function BuyerAccount() {
                 Open full profile →
               </Link>
             </section>
+            <div className="lg:col-span-2">
+              <ContactVerification />
+            </div>
+            <div className="lg:col-span-2">
+              <SavedSearchesCenter />
+            </div>
           </div>
         )}
       </main>

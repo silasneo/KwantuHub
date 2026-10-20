@@ -2,6 +2,7 @@ import { Link } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { ExpandingHeaderSearch } from "./ExpandingHeaderSearch";
 import { MegaMenuNav } from "./MegaMenuNav";
+import { NotificationCenter } from "./NotificationCenter";
 
 export function SiteHeader() {
   const { user, isAuthenticated, logout } = useAuth();
@@ -55,6 +56,7 @@ export function SiteHeader() {
 
           {isAuthenticated && user ? (
             <div className="flex items-center gap-3 sm:gap-4 pl-3 border-l border-[#d9d0c4]">
+              <NotificationCenter />
               {user.role === "admin" && (
                 <Link
                   href="/admin"

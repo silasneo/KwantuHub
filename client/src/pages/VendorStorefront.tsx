@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useRoute, Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
+import { SEOHead } from "@/components/SEOHead";
 
 export default function VendorStorefront() {
   const [, params] = useRoute("/vendors/:slug");
@@ -50,6 +51,24 @@ export default function VendorStorefront() {
 
   return (
     <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
+      <SEOHead
+        title={`${storefront.displayName} — African Diaspora Storefront`}
+        description={storefront.description?.slice(0, 160) || `Verified diaspora artisan storefront on KwantuHub.`}
+        canonicalPath={`/vendors/${storefront.slug}`}
+        ogType="website"
+        jsonLd={{
+          "@context": "https://schema.org",
+          "@type": "Store",
+          name: storefront.displayName,
+          description: storefront.description || undefined,
+          address: storefront.location
+            ? {
+                "@type": "PostalAddress",
+                addressLocality: storefront.location,
+              }
+            : undefined,
+        }}
+      />
       <SiteHeader />
 
       <main className="flex-1">
@@ -70,12 +89,26 @@ export default function VendorStorefront() {
               )}
               <div>
                 <div className="flex items-center gap-3 mb-2">
-                  <span className="text-[10px] font-bold uppercase tracking-widest bg-green-950 text-green-300 border border-green-800 px-2.5 py-0.5 rounded">
+                  {storefront.trust?.verified && <span className="text-[10px] font-bold uppercase tracking-widest bg-green-950 text-green-300 border border-green-800 px-2.5 py-0.5 rounded">
                     ✓ Verified Diaspora Vendor
-                  </span>
+                  </span>}
+                  {storefront.badges?.contactVerified && <span className="text-[10px] font-bold uppercase tracking-widest bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded">
+                    Contact verified
+                  </span>}
+                  {storefront.badges?.identityVerified && <span className="text-[10px] font-bold uppercase tracking-widest bg-blue-950 text-blue-300 border border-blue-800 px-2 py-0.5 rounded">
+                    ID verified
+                  </span>}
+                  {storefront.badges?.residenceVerified && <span className="text-[10px] font-bold uppercase tracking-widest bg-amber-950 text-amber-300 border border-amber-800 px-2 py-0.5 rounded">
+                    {storefront.badges.countryCode} residence verified
+                  </span>}
                   <span className="text-xs text-[#a8a199]">
                     📍 {storefront.location || "North America"}
                   </span>
+                  {storefront.trust?.responseRate !== null && storefront.trust?.responseRate !== undefined && (
+                    <span className="text-xs text-[#d1c8bd]">{Math.round(storefront.trust.responseRate * 100)}% response rate</span>
+                  )}
+                  {storefront.serviceArea && <span className="text-xs text-[#d1c8bd]">Serves {storefront.serviceArea}</span>}
+                  {storefront.remoteAvailable && <span className="text-xs text-[#fe8129]">Remote available</span>}
                 </div>
                 <h1 className="text-3xl sm:text-5xl font-serif font-bold text-white mb-2">
                   {storefront.displayName}
@@ -85,6 +118,12 @@ export default function VendorStorefront() {
                     "{storefront.headline}"
                   </p>
                 )}
+                <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wider text-[#d1c8bd]">
+                  {storefront.trust?.profileComplete && <span className="rounded border border-[#555] px-2 py-1">Complete profile</span>}
+                  {storefront.trust?.recentlyActive && <span className="rounded border border-[#555] px-2 py-1">Recently active</span>}
+                  {storefront.trust?.typicalResponseSeconds !== null && storefront.trust?.typicalResponseSeconds !== undefined && <span className="rounded border border-[#555] px-2 py-1">Replies in ~{Math.max(1, Math.round(storefront.trust.typicalResponseSeconds / 3600))}h</span>}
+                  {storefront.trust?.featuredEligible && <span className="rounded border border-[#fe8129] px-2 py-1 text-[#fe8129]">Featured eligible</span>}
+                </div>
               </div>
             </div>
 

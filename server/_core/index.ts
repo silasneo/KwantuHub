@@ -10,6 +10,10 @@ import { serveStatic, setupVite } from "./vite";
 import { registerApiDocs } from "../apiDocs";
 import { getDb } from "../db";
 import { startNotificationOutboxWorker } from "../notificationWorker";
+import { registerSendPulseWebhook } from "../sendPulseWebhook";
+import { registerDiditWebhook } from "../diditWebhook";
+import { registerSeoEndpoints } from "../seoService";
+import { apiV1Router } from "../apiV1Router";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -33,12 +37,16 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  registerSendPulseWebhook(app);
+  registerDiditWebhook(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   // User, vendor, and admin authentication is handled exclusively by JWT cookies.
   registerApiDocs(app);
+  registerSeoEndpoints(app);
+  app.use("/api/v1", apiV1Router);
   // tRPC API
   app.use(
     "/api/trpc",

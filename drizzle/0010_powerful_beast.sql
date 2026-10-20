@@ -1,0 +1,1 @@
+ALTER TABLE `moderationRecords` MODIFY COLUMN `entityType` enum('vendor','listing','review','message','conversation','dispute') NOT NULL;

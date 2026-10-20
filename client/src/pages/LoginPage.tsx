@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
+import TurnstileField from "@/components/TurnstileField";
 
 export default function LoginPage() {
   const [, setLocation] = useLocation();
@@ -13,6 +14,7 @@ export default function LoginPage() {
   const [name, setName] = useState("");
   const [role, setRole] = useState<"buyer" | "vendor">("buyer");
   const [errorMsg, setErrorMsg] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState<string>();
 
   const utils = trpc.useUtils();
 
@@ -57,7 +59,7 @@ export default function LoginPage() {
     if (mode === "login") {
       loginMutation.mutate({ email, password });
     } else {
-      registerMutation.mutate({ name, email, password, role });
+      registerMutation.mutate({ name, email, password, role, turnstileToken });
     }
   };
 
@@ -202,6 +204,7 @@ export default function LoginPage() {
               />
             </div>
 
+            {mode === "register" && <TurnstileField action="register" onToken={setTurnstileToken} />}
             <button
               type="submit"
               disabled={loginMutation.isPending || registerMutation.isPending}

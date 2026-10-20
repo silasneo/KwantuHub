@@ -4,19 +4,27 @@ import {
   eq,
   inArray,
   isNull,
+  isNotNull,
   lte,
+  lt,
   sql,
 } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import {
   notificationDeliveries,
   notificationOutbox,
   notificationPreferences,
+  notificationSuppressions,
   notifications,
+  notificationWebhookEvents,
+  systemSettings,
+  verificationChallenges,
   users,
   type NotificationOutbox,
 } from "../drizzle/schema";
 import { drizzle } from "drizzle-orm/mysql2";
 import { SendPulseTransactionalEmailAdapter } from "./sendPulseAdapter";
+import { decryptOtp } from "./contactVerification";
 
 export type NotificationEventType =
   | "INQUIRY_CREATED"
@@ -24,7 +32,10 @@ export type NotificationEventType =
   | "INQUIRY_RESOLVED"
   | "VENDOR_APPROVED"
   | "VENDOR_REJECTED"
-  | "REVIEW_MODERATED";
+  | "REVIEW_MODERATED"
+  | "EMAIL_ADDRESS_ACTION_REQUIRED"
+  | "EMAIL_DELIVERY_ALERT"
+  | "CONTACT_VERIFICATION_OTP";
 
 export type NotificationEvent = {
   eventType: NotificationEventType;
@@ -45,7 +56,10 @@ export function toNotificationType(eventType: NotificationEventType) {
     | "inquiry_resolved"
     | "vendor_approved"
     | "vendor_rejected"
-    | "review_moderated";
+    | "review_moderated"
+    | "email_address_action_required"
+    | "email_delivery_alert"
+    | "contact_verification_otp";
 }
 
 export function getEmailPreferenceField(eventType: NotificationEventType) {
@@ -90,6 +104,21 @@ export function notificationCopy(event: NotificationEvent) {
       return { title: "Vendor application update", body: "Your vendor application needs attention." };
     case "REVIEW_MODERATED":
       return { title: "Review moderation update", body: "Your review status has changed." };
+    case "EMAIL_ADDRESS_ACTION_REQUIRED":
+      return {
+        title: "Your email address needs attention",
+        body: String(payload.body || "A transactional email could not be delivered. Update your email address in your profile."),
+      };
+    case "EMAIL_DELIVERY_ALERT":
+      return {
+        title: "Email delivery alert",
+        body: String(payload.body || "SendPulse reported a delivery problem that needs review."),
+      };
+    case "CONTACT_VERIFICATION_OTP":
+      return {
+        title: "Verify your KwantuHub email",
+        body: "Use the one-time code sent to your email address to complete verification.",
+      };
   }
 }
 
@@ -130,10 +159,15 @@ export async function getOrCreateNotificationPreferences(
 async function processOutboxRow(
   db: NotificationDatabase,
   row: NotificationOutbox,
-  emailAdapter?: SendPulseTransactionalEmailAdapter
+  emailAdapter?: SendPulseTransactionalEmailAdapter,
+  emailPaused = false
 ) {
   const eventType = row.eventType as NotificationEventType;
   const payload = (row.payload || {}) as Record<string, unknown>;
+  if (eventType === "CONTACT_VERIFICATION_OTP") {
+    await deliverContactVerificationEmail(db, row, emailAdapter);
+    return;
+  }
   const preferences = await getOrCreateNotificationPreferences(db, row.recipientUserId);
   const copy = notificationCopy({
     eventType,
@@ -202,9 +236,42 @@ async function processOutboxRow(
       .where(eq(users.id, row.recipientUserId))
       .limit(1);
     if (recipient?.email) {
-      await deliverEmailNotification(db, row, notificationId, recipient, copy, emailAdapter);
+      await deliverEmailNotification(db, row, notificationId, recipient, copy, emailAdapter, emailPaused);
     }
   }
+}
+
+async function deliverContactVerificationEmail(
+  db: NotificationDatabase,
+  row: NotificationOutbox,
+  adapter = new SendPulseTransactionalEmailAdapter()
+) {
+  const challengeId = Number((row.payload as Record<string, unknown> | null)?.challengeId);
+  if (!Number.isInteger(challengeId) || challengeId <= 0) {
+    throw new Error("OTP challenge is missing");
+  }
+  const [challenge] = await db
+    .select()
+    .from(verificationChallenges)
+    .where(eq(verificationChallenges.id, challengeId))
+    .limit(1);
+  if (!challenge || challenge.consumedAt || challenge.expiresAt.getTime() <= Date.now()) {
+    throw new Error("OTP challenge is expired or unavailable");
+  }
+  const [recipient] = await db
+    .select({ email: users.email, name: users.name })
+    .from(users)
+    .where(eq(users.id, row.recipientUserId))
+    .limit(1);
+  if (!recipient?.email) throw new Error("OTP recipient email is missing");
+  const code = decryptOtp(challenge.codeCiphertext);
+  await adapter.send({
+    to: [{ email: recipient.email, name: recipient.name }],
+    subject: "Your KwantuHub verification code",
+    text: `Your KwantuHub verification code is ${code}. It expires in 10 minutes. If you did not request this, you can ignore this email.`,
+    html: `<p>Your KwantuHub verification code is <strong>${code}</strong>.</p><p>It expires in 10 minutes. If you did not request this, you can ignore this email.</p>`,
+    idempotencyKey: row.idempotencyKey,
+  });
 }
 
 async function deliverEmailNotification(
@@ -213,7 +280,8 @@ async function deliverEmailNotification(
   notificationId: number | undefined,
   recipient: { email: string | null; name: string | null },
   copy: { title: string; body: string },
-  adapter = new SendPulseTransactionalEmailAdapter()
+  adapter = new SendPulseTransactionalEmailAdapter(),
+  emailPaused = false
 ) {
   if (!recipient.email) return;
   const [existing] = await db
@@ -244,6 +312,44 @@ async function deliverEmailNotification(
     await db
       .update(notificationDeliveries)
       .set({ provider: adapter.provider, status: "queued", nextAttemptAt: new Date() })
+      .where(eq(notificationDeliveries.id, deliveryId));
+    return;
+  }
+
+  if (emailPaused) {
+    await db
+      .update(notificationDeliveries)
+      .set({
+        provider: adapter.provider,
+        status: "queued",
+        nextAttemptAt: new Date(Date.now() + 5 * 60 * 1000),
+      })
+      .where(eq(notificationDeliveries.id, deliveryId));
+    return;
+  }
+
+  const normalizedEmail = recipient.email.trim().toLowerCase();
+  const [suppression] = await db
+    .select({ reason: notificationSuppressions.reason })
+    .from(notificationSuppressions)
+    .where(
+      and(
+        eq(notificationSuppressions.provider, adapter.provider),
+        eq(notificationSuppressions.email, normalizedEmail),
+        eq(notificationSuppressions.active, true)
+      )
+    )
+    .limit(1);
+  if (suppression) {
+    await db
+      .update(notificationDeliveries)
+      .set({
+        provider: adapter.provider,
+        status: "failed",
+        failureCode: "suppressed",
+        failureReason: `Suppressed by ${suppression.reason}`,
+        lastAttemptAt: new Date(),
+      })
       .where(eq(notificationDeliveries.id, deliveryId));
     return;
   }
@@ -307,10 +413,31 @@ export async function processNotificationOutboxBatch(
     limit?: number;
     now?: Date;
     emailAdapter?: SendPulseTransactionalEmailAdapter;
+    leaseMs?: number;
   } = {}
 ) {
   const now = options.now ?? new Date();
   const limit = Math.max(1, Math.min(options.limit ?? 10, 50));
+  const leaseMs = Math.max(options.leaseMs ?? 60_000, 15_000);
+  const leaseExpiresAt = new Date(now.getTime() + leaseMs);
+  const [reclaimedResult] = await db
+    .update(notificationOutbox)
+    .set({
+      status: "failed",
+      availableAt: now,
+      lockedAt: null,
+      lockToken: null,
+      leaseExpiresAt: null,
+      lastError: "Worker lease expired; item reclaimed",
+    })
+    .where(and(eq(notificationOutbox.status, "processing"), lte(notificationOutbox.leaseExpiresAt, now)));
+  const reclaimed = Number(reclaimedResult?.affectedRows || 0);
+  const [pauseSetting] = await db
+    .select({ booleanValue: systemSettings.booleanValue })
+    .from(systemSettings)
+    .where(eq(systemSettings.settingKey, "email_delivery_paused"))
+    .limit(1);
+  const emailPaused = pauseSetting?.booleanValue === true;
   const candidates = await db
     .select()
     .from(notificationOutbox)
@@ -325,12 +452,18 @@ export async function processNotificationOutboxBatch(
 
   let completed = 0;
   let failed = 0;
+  let dead = 0;
+  let skipped = 0;
   for (const candidate of candidates) {
+    const lockToken = randomUUID();
     const [claimed] = await db
       .update(notificationOutbox)
       .set({
         status: "processing",
         lockedAt: now,
+        lockToken,
+        leaseExpiresAt,
+        lastAttemptAt: now,
         attempts: sql`${notificationOutbox.attempts} + 1`,
       })
       .where(
@@ -340,15 +473,18 @@ export async function processNotificationOutboxBatch(
           lte(notificationOutbox.availableAt, now)
         )
       );
-    if (!claimed || claimed.affectedRows === 0) continue;
+    if (!claimed || claimed.affectedRows === 0) {
+      skipped += 1;
+      continue;
+    }
 
     const attempt = candidate.attempts + 1;
     try {
-      await processOutboxRow(db, candidate, options.emailAdapter);
+      await processOutboxRow(db, candidate, options.emailAdapter, emailPaused);
       await db
         .update(notificationOutbox)
-        .set({ status: "completed", processedAt: new Date(), lockedAt: null })
-        .where(eq(notificationOutbox.id, candidate.id));
+        .set({ status: "completed", processedAt: new Date(), lockedAt: null, lockToken: null, leaseExpiresAt: null })
+        .where(and(eq(notificationOutbox.id, candidate.id), eq(notificationOutbox.lockToken, lockToken)));
       completed += 1;
     } catch (error) {
       const terminal = attempt >= 6;
@@ -358,19 +494,50 @@ export async function processNotificationOutboxBatch(
           status: terminal ? "dead" : "failed",
           availableAt: new Date(Date.now() + calculateRetryDelay(attempt)),
           lockedAt: null,
+          lockToken: null,
+          leaseExpiresAt: null,
           lastError: error instanceof Error ? error.message : String(error),
         })
-        .where(eq(notificationOutbox.id, candidate.id));
+        .where(and(eq(notificationOutbox.id, candidate.id), eq(notificationOutbox.lockToken, lockToken)));
       failed += 1;
+      if (terminal) dead += 1;
     }
   }
 
-  return { inspected: candidates.length, completed, failed };
+  return { inspected: candidates.length, completed, failed, dead, reclaimed, skipped, providerDisabled: emailPaused };
+}
+
+export async function purgeExpiredNotificationData(
+  db: NotificationDatabase,
+  options: { now?: Date; retentionDays?: number } = {}
+) {
+  const now = options.now ?? new Date();
+  const retentionDays = Math.max(1, Math.min(options.retentionDays ?? 90, 365));
+  const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
+  const [notificationsDeleted] = await db.delete(notifications).where(
+    and(isNotNull(notifications.expiresAt), lt(notifications.expiresAt, now))
+  );
+  const [webhooksDeleted] = await db.delete(notificationWebhookEvents).where(
+    and(eq(notificationWebhookEvents.processingStatus, "processed"), lt(notificationWebhookEvents.receivedAt, cutoff))
+  );
+  const [outboxDeleted] = await db.delete(notificationOutbox).where(
+    and(eq(notificationOutbox.status, "completed"), isNotNull(notificationOutbox.processedAt), lt(notificationOutbox.processedAt, cutoff))
+  );
+  return {
+    notificationsDeleted: Number(notificationsDeleted?.affectedRows || 0),
+    webhooksDeleted: Number(webhooksDeleted?.affectedRows || 0),
+    outboxDeleted: Number(outboxDeleted?.affectedRows || 0),
+  };
 }
 
 export function startNotificationOutboxWorker(
   db: NotificationDatabase,
-  options: { intervalMs?: number; batchSize?: number } = {}
+  options: {
+    intervalMs?: number;
+    batchSize?: number;
+    retentionIntervalMs?: number;
+    onMetrics?: (metrics: Awaited<ReturnType<typeof processNotificationOutboxBatch>>) => void;
+  } = {}
 ) {
   const intervalMs = Math.max(options.intervalMs ?? 15_000, 5_000);
   const emailAdapter = new SendPulseTransactionalEmailAdapter();
@@ -378,8 +545,15 @@ export function startNotificationOutboxWorker(
     void processNotificationOutboxBatch(db, {
       limit: options.batchSize ?? 10,
       emailAdapter,
-    });
+    }).then(metrics => options.onMetrics?.(metrics));
   }, intervalMs);
+  const retentionTimer = setInterval(() => {
+    void purgeExpiredNotificationData(db);
+  }, Math.max(options.retentionIntervalMs ?? 24 * 60 * 60 * 1000, 60 * 60 * 1000));
   timer.unref?.();
-  return () => clearInterval(timer);
+  retentionTimer.unref?.();
+  return () => {
+    clearInterval(timer);
+    clearInterval(retentionTimer);
+  };
 }

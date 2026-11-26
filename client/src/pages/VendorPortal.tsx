@@ -289,7 +289,7 @@ export default function VendorPortal() {
         )}
 
         {/* Navigation Tabs */}
-        <div className="flex border-b border-[#d9d0c4] mb-8 gap-8 overflow-x-auto whitespace-nowrap [scrollbar-width:none]">
+        <div className="flex border-b border-[#d9d0c4] mb-8 gap-8 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <button
             onClick={() => setActiveTab("listings")}
             className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${

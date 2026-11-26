@@ -25,7 +25,8 @@ function formatRelativeTime(value: Date | string | null) {
 export default function BuyerAccount() {
   const [, setLocation] = useLocation();
   const { user, isAuthenticated } = useAuth();
-  const { activeTab, setActiveTab, inquiryId } = useDashboardTab(["wishlist", "inquiries", "history", "reviews", "settings"] as const, "inquiries");
+  const { activeTab, setActiveTab, inquiryId } = useDashboardTab(["wishlist", "inquiries", "history", "reviews", "notifications", "settings"] as const, "inquiries");
+  const { data: notificationCount } = trpc.notifications.unreadCount.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 30_000 });
   const [emailInquiries, setEmailInquiries] = useState(true);
   const [emailReplies, setEmailReplies] = useState(true);
   const [productUpdates, setProductUpdates] = useState(false);
@@ -141,12 +142,8 @@ export default function BuyerAccount() {
           </p>
         </div>
 
-        <div className="mb-8 max-w-2xl">
-          <NotificationCenter mode="panel" />
-        </div>
-
         {/* Tabs */}
-        <div className="flex border-b border-[#d9d0c4] mb-8 gap-8">
+        <div className="flex border-b border-[#d9d0c4] mb-8 gap-8 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <button
             onClick={() => setActiveTab("inquiries")}
             className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
@@ -193,6 +190,16 @@ export default function BuyerAccount() {
             My Reviews ({reviewData?.pagination.total ?? "..."})
           </button>
           <button
+            onClick={() => setActiveTab("notifications")}
+            className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
+              activeTab === "notifications"
+                ? "border-[#d71466] text-[#d71466]"
+                : "border-transparent text-[#68635c] hover:text-[#0a0a0a]"
+            }`}
+          >
+            Notifications ({notificationCount?.unreadCount ?? "..."})
+          </button>
+          <button
             onClick={() => setActiveTab("settings")}
             className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
               activeTab === "settings"
@@ -208,6 +215,11 @@ export default function BuyerAccount() {
         <PortalRequestStatus queries={[{ error: wishlistError }, { error: inquiriesError }, { error: historyError }, { error: reviewsError }]}
           mutations={[toggleWishlist, removeView, clearViews, replyInquiry, markInquiryRead, closeInquiry, reopenInquiry, archiveInquiry, unarchiveInquiry, reportConversation, updateProfile, changePassword]}
           onRetry={() => { utils.buyer.invalidate(); }} />
+        {activeTab === "notifications" && (
+          <div className="max-w-3xl">
+            <NotificationCenter mode="panel" />
+          </div>
+        )}
         {activeTab === "inquiries" && inquiryId && <p className="mb-4"><Link href="/account?tab=inquiries" className="underline">Show all conversations</Link></p>}
         {activeTab === "inquiries" && inquiryId && inquiries && !inquiries.some(inquiry => inquiry.id === inquiryId) && <p role="alert" className="form-error mb-4">The linked conversation is unavailable in this account. Choose another conversation or <Link href="/support" className="underline">contact support</Link>.</p>}
         {activeTab === "inquiries" && <CollectionPager pagination={inquiryData?.pagination} onPage={setInquiryPage} label="Conversations" />}

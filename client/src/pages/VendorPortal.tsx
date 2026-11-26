@@ -194,7 +194,7 @@ export default function VendorPortal() {
             href="/login"
             className="text-xs font-bold uppercase tracking-wider text-white brand-gradient px-6 py-3 rounded"
           >
-            Sign In with JWT
+            Sign In
           </Link>
         </main>
         <SiteFooter />

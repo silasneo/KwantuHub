@@ -1,13 +1,18 @@
 import crypto from "node:crypto";
 import express, { type Express, type Request, type Response } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   notificationWebhookEvents,
   vendorProfiles,
   vendorVerificationSessions,
+  accountOnboarding,
+  users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { ENV } from "./_core/env";
+import { isAdult, readIdentity } from "./accountPolicy";
+import { decryptOtp, encryptOtp } from "./contactVerification";
+import { recordDiditVerificationDecisions } from "./diditDecisionPersistence";
 
 export const DIDIT_WEBHOOK_PATH = "/api/webhooks/kyc/didit";
 const MAX_WEBHOOK_AGE_SECONDS = 300;
@@ -87,23 +92,24 @@ export function verifyDiditSignature(
 }
 
 export function mapDiditStatus(status: string | undefined) {
-  switch (status) {
-    case "Not Started":
+  const normalized = status?.toLowerCase().replaceAll("_", " ");
+  switch (normalized) {
+    case "not started":
       return "created" as const;
-    case "In Progress":
-    case "Awaiting User":
+    case "in progress":
+    case "awaiting user":
       return "submitted" as const;
-    case "In Review":
-    case "Resubmitted":
+    case "in review":
+    case "resubmitted":
       return "in_review" as const;
-    case "Approved":
+    case "approved":
       return "approved" as const;
-    case "Declined":
+    case "declined":
       return "declined" as const;
-    case "Expired":
-    case "Kyc Expired":
+    case "expired":
+    case "kyc expired":
       return "expired" as const;
-    case "Abandoned":
+    case "abandoned":
       return "abandoned" as const;
     default:
       return null;
@@ -119,83 +125,307 @@ function parseDate(value: number | string | undefined) {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
-async function applyDiditEvent(
+type Database = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+export const DIDIT_PROVIDER = "didit";
+export const AWAITING_DIDIT_SESSION = "Awaiting Didit session commit";
+/** Callbacks for sessions that never commit are abandoned after this window. */
+export const DIDIT_EARLY_EVENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type DiditCheckDecision = {
+  checkType: "identity" | "residence";
+  outcome: "verified" | "rejected";
+  countryCode: string | null;
+  reason: string;
+};
+
+export type DiditDecisionRecorderInput = {
+  sessionId: number;
+  vendorId: number;
+  userId: number;
+  decisions: DiditCheckDecision[];
+  eventAt: Date;
+  activeOnboarding: boolean;
+  identityMatches: boolean;
+  providerEventId: string;
+};
+
+export type DiditDecisionRecorder = (tx: Transaction, input: DiditDecisionRecorderInput) => Promise<void>;
+
+let decisionRecorder: DiditDecisionRecorder | null = null;
+
+/** Optional transactional observer; authoritative decision persistence always runs first. */
+export function setDiditDecisionRecorder(recorder: DiditDecisionRecorder | null) {
+  decisionRecorder = recorder;
+}
+
+type DiditStoredEventPayload = {
+  session_id?: string;
+  status?: string;
+  signatureVersion?: "v2" | "raw";
+  encryptedPayload?: string;
+};
+
+const ALPHA3_TO_ALPHA2: Record<string, string> = { USA: "US", CAN: "CA", MEX: "MX" };
+
+export function normalizeCountryCode(value: unknown) {
+  if (typeof value !== "string") return null;
+  const code = value.trim().toUpperCase();
+  if (/^[A-Z]{2}$/.test(code)) return code;
+  return ALPHA3_TO_ALPHA2[code] ?? null;
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function decisionBody(payload: DiditWebhookPayload) {
+  return asRecord(payload.decision) ?? payload;
+}
+
+function checkEntries(decision: Record<string, unknown>, plural: string[], singular: string[]) {
+  for (const key of plural) if (Array.isArray(decision[key])) return (decision[key] as unknown[]).map(asRecord).filter(Boolean) as Record<string, unknown>[];
+  for (const key of singular) {
+    const entry = asRecord(decision[key]);
+    if (entry) return [entry];
+  }
+  return [];
+}
+
+function checkStatus(entry: Record<string, unknown>) {
+  return String(entry.status ?? "").trim().toLowerCase();
+}
+
+function residenceCountry(entry: Record<string, unknown>) {
+  const parsed = asRecord(entry.parsed_address) ?? asRecord(entry.address);
+  for (const value of [entry.country_code, entry.country, entry.document_country, parsed?.country_code, parsed?.country]) {
+    const code = normalizeCountryCode(value);
+    if (code) return code;
+  }
+  return null;
+}
+
+export function diditIdentityMatches(payload: DiditWebhookPayload, expected: { firstName: string; lastName: string; dateOfBirth: string }) {
+  const normalizeName = (value: unknown) => String(value ?? "").normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  return checkEntries(decisionBody(payload), ["id_verifications"], ["id_verification"]).some(identity =>
+    checkStatus(identity) === "approved" &&
+    identity.date_of_birth === expected.dateOfBirth && isAdult(expected.dateOfBirth) &&
+    normalizeName(identity.first_name) === normalizeName(expected.firstName) &&
+    normalizeName(identity.last_name) === normalizeName(expected.lastName));
+}
+
+/**
+ * Derives per-check outcomes from the checks Didit actually reports. The requested session type
+ * is never evidence: residence is certified only by an approved proof-of-address check whose
+ * document country is allowed for the session (its countryCode, otherwise US/CA).
+ */
+export function deriveDiditCheckDecisions(
   payload: DiditWebhookPayload,
-  signatureVersion: "v2" | "raw"
-) {
-  const db = await getDb();
-  if (!db) throw new Error("Database unavailable");
+  session: { countryCode: string | null },
+  options: { activeOnboarding: boolean; identityMatches: boolean }
+): DiditCheckDecision[] {
+  const decision = decisionBody(payload);
+  const decisions: DiditCheckDecision[] = [];
+  const identities = checkEntries(decision, ["id_verifications"], ["id_verification"]);
+  if (identities.some(entry => checkStatus(entry) === "approved")) {
+    if (!options.activeOnboarding || options.identityMatches) {
+      decisions.push({ checkType: "identity", outcome: "verified", countryCode: null, reason: "Didit identity document check approved" });
+    }
+  } else if (identities.length && identities.every(entry => checkStatus(entry) === "declined")) {
+    decisions.push({ checkType: "identity", outcome: "rejected", countryCode: null, reason: "Didit identity document check declined" });
+  }
 
-  const providerEventId = payload.event_id || `${payload.session_id || "unknown"}:${payload.webhook_type || "unknown"}:${payload.timestamp || "unknown"}`;
-  const payloadHash = crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-  const [existing] = await db
-    .select({ id: notificationWebhookEvents.id })
-    .from(notificationWebhookEvents)
-    .where(and(eq(notificationWebhookEvents.provider, "didit"), eq(notificationWebhookEvents.providerEventId, providerEventId)))
-    .limit(1);
-  if (existing) return { status: "duplicate" as const, providerEventId };
+  const allowed = session.countryCode ? [session.countryCode.toUpperCase()] : ["US", "CA", "MX"];
+  const residences = checkEntries(decision, ["poa_verifications", "proof_of_address_verifications"], ["poa_verification", "proof_of_address"]);
+  const approvedResidence = residences.filter(entry => checkStatus(entry) === "approved");
+  const allowedResidence = approvedResidence.find(entry => allowed.includes(residenceCountry(entry) ?? ""));
+  if (allowedResidence) {
+    decisions.push({ checkType: "residence", outcome: "verified", countryCode: residenceCountry(allowedResidence), reason: "Didit proof-of-address check approved" });
+  } else if (approvedResidence.some(entry => residenceCountry(entry))) {
+    decisions.push({ checkType: "residence", outcome: "rejected", countryCode: residenceCountry(approvedResidence[0]), reason: "Proof-of-address country is not eligible for this session" });
+  } else if (residences.length && residences.every(entry => checkStatus(entry) === "declined")) {
+    decisions.push({ checkType: "residence", outcome: "rejected", countryCode: null, reason: "Didit proof-of-address check declined" });
+  }
+  return decisions;
+}
 
+function diditEventIdentity(payload: DiditWebhookPayload) {
+  return {
+    providerEventId: payload.event_id || `${payload.session_id || "unknown"}:${payload.webhook_type || "unknown"}:${payload.timestamp || "unknown"}`,
+    payloadHash: crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+  };
+}
+
+function diditEventScope(providerEventId: string) {
+  return and(eq(notificationWebhookEvents.provider, DIDIT_PROVIDER), eq(notificationWebhookEvents.providerEventId, providerEventId));
+}
+
+/** Stores the full callback encrypted so it can be replayed; it is stripped once processed. */
+async function persistRetryableDiditEvent(db: Database, payload: DiditWebhookPayload, signatureVersion: "v2" | "raw", lastError: string) {
+  const { providerEventId, payloadHash } = diditEventIdentity(payload);
+  const stored: DiditStoredEventPayload = {
+    session_id: payload.session_id,
+    status: payload.status,
+    signatureVersion,
+    encryptedPayload: encryptOtp(JSON.stringify(payload)),
+  };
   await db.insert(notificationWebhookEvents).values({
-    provider: "didit",
-    providerEventId,
-    providerMessageId: payload.session_id || null,
-    providerEventType: payload.webhook_type || "status.updated",
-    signatureVerified: true,
-    payloadHash,
-    payload,
+    provider: DIDIT_PROVIDER, providerEventId, providerMessageId: payload.session_id,
+    providerEventType: payload.webhook_type || "status.updated", signatureVerified: true, payloadHash,
+    payload: stored, processingStatus: "failed", processingAttempts: 0, lastError,
     providerEventAt: parseDate(payload.timestamp || payload.created_at),
-  });
+  }).onDuplicateKeyUpdate({ set: { provider: DIDIT_PROVIDER } });
+  await db.update(notificationWebhookEvents).set({
+    processingStatus: "failed", lastError,
+    processingAttempts: sql`${notificationWebhookEvents.processingAttempts} + 1`,
+    payload: stored,
+  }).where(and(diditEventScope(providerEventId), eq(notificationWebhookEvents.payloadHash, payloadHash), inArray(notificationWebhookEvents.processingStatus, ["received", "failed"])));
+  return providerEventId;
+}
 
+export function readStoredDiditPayload(stored: unknown) {
+  const record = asRecord(stored) as DiditStoredEventPayload | null;
+  if (!record?.encryptedPayload) return null;
+  return {
+    payload: JSON.parse(decryptOtp(record.encryptedPayload)) as DiditWebhookPayload,
+    signatureVersion: record.signatureVersion ?? "v2" as const,
+  };
+}
+
+export async function applyDiditEvent(
+  payload: DiditWebhookPayload,
+  signatureVersion: "v2" | "raw",
+  options: { db?: Database; now?: Date } = {}
+) {
+  const db = options.db ?? await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const { providerEventId } = diditEventIdentity(payload);
   const mappedStatus = mapDiditStatus(payload.status);
-  if (!payload.session_id || !mappedStatus) {
-    await db.update(notificationWebhookEvents)
-      .set({ processingStatus: "ignored", processedAt: new Date(), lastError: "Unsupported or incomplete Didit event" })
-      .where(eq(notificationWebhookEvents.providerEventId, providerEventId));
-    return { status: "ignored" as const, providerEventId };
+  if (!payload.session_id || !mappedStatus) return { status: "ignored" as const, providerEventId };
+  const [reference] = await db.select().from(vendorVerificationSessions).where(and(
+    eq(vendorVerificationSessions.provider, DIDIT_PROVIDER), eq(vendorVerificationSessions.providerSessionId, payload.session_id)
+  )).limit(1);
+  if (!reference) {
+    // Early callback: keep it durably (encrypted) so the reconciler can apply it once the session commits.
+    await persistRetryableDiditEvent(db, payload, signatureVersion, AWAITING_DIDIT_SESSION);
+    return { status: "deferred" as const, providerEventId };
   }
+  try {
+    return await applyDiditEventToSession(db, reference.id, reference.userId, payload, signatureVersion, mappedStatus, options.now ?? new Date());
+  } catch (error) {
+    if (!(error instanceof DiditEventConflictError)) {
+      await persistRetryableDiditEvent(db, payload, signatureVersion, error instanceof Error ? error.message.slice(0, 1000) : String(error))
+        .catch(() => undefined);
+    }
+    throw error;
+  }
+}
 
-  const [session] = await db
-    .select()
-    .from(vendorVerificationSessions)
-    .where(and(eq(vendorVerificationSessions.provider, "didit"), eq(vendorVerificationSessions.providerSessionId, payload.session_id)))
-    .limit(1);
-  if (!session) {
-    await db.update(notificationWebhookEvents)
-      .set({ processingStatus: "ignored", processedAt: new Date(), lastError: "Didit session not found" })
-      .where(eq(notificationWebhookEvents.providerEventId, providerEventId));
-    return { status: "ignored" as const, providerEventId };
-  }
+export class DiditEventConflictError extends Error {}
 
-  const now = new Date();
-  await db.update(vendorVerificationSessions)
-    .set({
-      status: mappedStatus,
-      metadata: { didit: payload, signatureVersion },
-      reviewedAt: mappedStatus === "approved" || mappedStatus === "declined" ? now : session.reviewedAt,
-      updatedAt: now,
-    })
-    .where(eq(vendorVerificationSessions.id, session.id));
+async function applyDiditEventToSession(
+  db: Database,
+  sessionId: number,
+  userId: number,
+  payload: DiditWebhookPayload,
+  signatureVersion: "v2" | "raw",
+  mappedStatus: NonNullable<ReturnType<typeof mapDiditStatus>>,
+  now: Date
+) {
+  const { providerEventId, payloadHash } = diditEventIdentity(payload);
+  return db.transaction(async tx => {
+    // Lock order: user -> session -> event (matches onboarding and admin decision paths).
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("update");
+    const [session] = await tx.select().from(vendorVerificationSessions).where(eq(vendorVerificationSessions.id, sessionId)).for("update");
+    const eventWhere = diditEventScope(providerEventId);
+    const [existing] = await tx.select().from(notificationWebhookEvents).where(eventWhere).limit(1).for("update");
+    if (existing?.processingStatus === "processed" || existing?.processingStatus === "ignored") return { status: "duplicate" as const, providerEventId };
+    if (existing && existing.payloadHash !== payloadHash) throw new DiditEventConflictError("Didit event ID reused with different content.");
+    // Do not retain identity document details in the general notification log.
+    const minimalPayload = { session_id: payload.session_id, status: payload.status };
+    if (!existing) await tx.insert(notificationWebhookEvents).values({
+      provider: DIDIT_PROVIDER, providerEventId, providerMessageId: payload.session_id,
+      providerEventType: payload.webhook_type || "status.updated", signatureVerified: true, payloadHash,
+      payload: minimalPayload,
+      providerEventAt: parseDate(payload.timestamp || payload.created_at),
+    });
+    const finish = (lastError: string | null) => tx.update(notificationWebhookEvents).set({
+      processingStatus: "processed", processedAt: now, payload: minimalPayload, lastError,
+      processingAttempts: sql`${notificationWebhookEvents.processingAttempts} + 1`,
+    }).where(eventWhere);
 
-  const profileUpdate: Record<string, unknown> = {};
-  const isIdentity = session.sessionType === "identity_document" || session.sessionType === "liveness" || session.sessionType === "combined_na_vendor";
-  const isResidence = session.sessionType === "proof_of_residence" || session.sessionType === "combined_na_vendor";
-  const profileStatus = mappedStatus === "approved" ? "verified" : mappedStatus === "declined" ? "rejected" : mappedStatus === "expired" ? "expired" : mappedStatus === "in_review" || mappedStatus === "submitted" ? "pending" : undefined;
-  if (profileStatus && isIdentity) {
-    profileUpdate.identityStatus = profileStatus;
-    if (profileStatus === "verified") profileUpdate.identityVerifiedAt = now;
-  }
-  if (profileStatus && isResidence) {
-    profileUpdate.residenceStatus = profileStatus;
-    if (profileStatus === "verified") profileUpdate.residenceVerifiedAt = now;
-  }
-  if (Object.keys(profileUpdate).length > 0) {
-    await db.update(vendorProfiles).set(profileUpdate).where(eq(vendorProfiles.id, session.vendorId));
-  }
+    const metadata = (asRecord(session.metadata) ?? {}) as Record<string, unknown> & { lastEventAt?: number };
+    const eventAtDate = parseDate(payload.timestamp || payload.created_at);
+    const eventAt = eventAtDate?.getTime() ?? 0;
+    // Monotonic: older events and terminal -> non-terminal regressions never change state.
+    if (eventAt < (metadata.lastEventAt ?? 0) ||
+      (["approved", "declined", "expired", "abandoned"].includes(session.status) && ["created", "submitted", "in_review"].includes(mappedStatus))) {
+      await finish("Out-of-order Didit event; session state unchanged");
+      return { status: "ignored" as const, providerEventId };
+    }
+    const [onboarding] = await tx.select().from(accountOnboarding).where(eq(accountOnboarding.userId, session.userId)).for("update");
+    const activeOnboardingSession = onboarding?.kycSessionId === session.id;
+    const identityMatches = activeOnboardingSession && mappedStatus === "approved"
+      ? diditIdentityMatches(payload, readIdentity(onboarding.identityCiphertext))
+      : false;
+    const status = activeOnboardingSession && mappedStatus === "approved" && !identityMatches ? "in_review" : mappedStatus;
+    const decisions = mappedStatus === "approved" || mappedStatus === "declined"
+      ? deriveDiditCheckDecisions(payload, session, { activeOnboarding: activeOnboardingSession, identityMatches })
+      : [];
+    await tx.update(vendorVerificationSessions).set({
+      status,
+      metadata: {
+        ...metadata,
+        lastEventAt: eventAt,
+        lastProviderEventId: providerEventId,
+        providerStatus: mappedStatus,
+        signatureVersion,
+        identityMatches,
+        identityMatchedAt: identityMatches ? now.toISOString() : null,
+        activeOnboarding: activeOnboardingSession,
+        checkOutcomes: decisions.map(({ checkType, outcome, countryCode }) => ({ checkType, outcome, countryCode })),
+      },
+      reviewedAt: ["approved", "declined"].includes(status) ? now : session.reviewedAt, updatedAt: now,
+    }).where(eq(vendorVerificationSessions.id, session.id));
+    if (decisions.length) {
+      const input = {
+        sessionId: session.id, vendorId: session.vendorId, userId: session.userId, decisions,
+        eventAt: eventAtDate ?? now, activeOnboarding: activeOnboardingSession, identityMatches, providerEventId,
+      };
+      await recordDiditVerificationDecisions(tx, input);
+      if (decisionRecorder) await decisionRecorder(tx, input);
+    }
+    if (activeOnboardingSession) {
+      await tx.update(accountOnboarding).set({ kycVerifiedAt: identityMatches ? now : null }).where(eq(accountOnboarding.userId, session.userId));
+      await tx.update(vendorProfiles).set({
+        identityStatus: identityMatches ? "verified" : status === "declined" ? "rejected" : status === "expired" ? "expired" : "pending",
+        identityVerifiedAt: identityMatches ? now : null,
+      }).where(eq(vendorProfiles.id, session.vendorId));
+    }
+    await finish(activeOnboardingSession && mappedStatus === "approved" && !identityMatches ? "Verified name/date of birth missing or mismatched; activation blocked." : null);
+    return { status: "processed" as const, providerEventId, mappedStatus: status, decisions };
+  });
+}
 
-  await db.update(notificationWebhookEvents)
-    .set({ processingStatus: "processed", processedAt: now })
-    .where(eq(notificationWebhookEvents.providerEventId, providerEventId));
-  return { status: "processed" as const, providerEventId, mappedStatus };
+/** Replays a stored retryable Didit event (early callback or failed processing). */
+export async function reprocessDiditWebhookEvent(db: Database, event: typeof notificationWebhookEvents.$inferSelect, now = new Date()) {
+  const stored = readStoredDiditPayload(event.payload);
+  const scope = and(diditEventScope(event.providerEventId), inArray(notificationWebhookEvents.processingStatus, ["received", "failed"]));
+  if (!stored) {
+    await db.update(notificationWebhookEvents).set({ processingStatus: "ignored", processedAt: now, lastError: "No replayable payload" }).where(scope);
+    return "ignored" as const;
+  }
+  if (now.getTime() - event.receivedAt.getTime() > DIDIT_EARLY_EVENT_WINDOW_MS) {
+    await db.update(notificationWebhookEvents).set({
+      processingStatus: "ignored", processedAt: now,
+      payload: { session_id: stored.payload.session_id, status: stored.payload.status },
+      lastError: "Didit event could not be applied within the retry window",
+    }).where(scope);
+    return "ignored" as const;
+  }
+  const result = await applyDiditEvent(stored.payload, stored.signatureVersion, { db, now });
+  return result.status === "deferred" ? "pending" as const : "processed" as const;
 }
 
 async function processDiditWebhook(req: Request, res: Response) {

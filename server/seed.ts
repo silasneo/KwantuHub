@@ -52,8 +52,8 @@ const demoVendors = [
     headline: "Cloth that carries memory",
     description:
       "Curated Nigerian Ankara prints, hand-dyed adire, and occasion wear for the diaspora across North America.",
-    logoUrl: "/manus-storage/kwantu-ceremony-tailor_6da99e5d_14bae697.jpg",
-    coverUrl: "/manus-storage/kwantu-hero-fashion-maker_20399257_99e7dc6b.jpg",
+    logoStorageKey: "public/kwantu-ceremony-tailor_6da99e5d_14bae697.jpg",
+    coverStorageKey: "public/kwantu-hero-fashion-maker_20399257_99e7dc6b.jpg",
     items: [
       {
         slug: "adire-silk",
@@ -62,11 +62,10 @@ const demoVendors = [
           "A rich hand-dyed adire textile selected by Aunty Eki's Ankara for occasion dressing and heirloom tailoring. The pattern carries a vivid indigo story with a versatile five-yard cut.",
         price: "$85.00",
         type: "product" as const,
-        image: "/manus-storage/kwantu-ceremony-tailor_6da99e5d_14bae697.jpg",
+        image: "public/kwantu-ceremony-tailor_6da99e5d_14bae697.jpg",
         gallery: [
-          "/manus-storage/kwantu-ceremony-tailor_6da99e5d_14bae697.jpg",
-          "/manus-storage/kwantu-hero-fashion-maker_20399257_99e7dc6b.jpg",
-          "/manus-storage/kwantu-christmas-market_9ea74b26_1a8e6c12.jpg",
+          "public/kwantu-ceremony-tailor_6da99e5d_14bae697.jpg",
+          "public/kwantu-hero-fashion-maker_20399257_99e7dc6b.jpg",
         ],
         size: "tall",
       },
@@ -77,7 +76,7 @@ const demoVendors = [
           "A joyful Ankara wrap for gatherings, gifting, and everyday expression, selected from Aunty Eki's rotating fabric archive.",
         price: "$74.00",
         type: "product" as const,
-        image: "/manus-storage/kwantu-hero-fashion-maker_20399257_99e7dc6b.jpg",
+        image: "public/kwantu-hero-fashion-maker_20399257_99e7dc6b.jpg",
         size: "short",
       },
     ],
@@ -96,8 +95,8 @@ const demoVendors = [
     headline: "Fresh pantry staples delivered across the US",
     description:
       "East African teas, berbere spices, and essential pantry staples delivered fresh to your door.",
-    logoUrl: "/manus-storage/kwantu-hero-caterer_500a9501_b0867b9e.jpg",
-    coverUrl: "/manus-storage/kwantu-wellness-tea_06aa39c7_ad80b8bd.jpg",
+    logoStorageKey: "public/kwantu-hero-caterer_500a9501_b0867b9e.jpg",
+    coverStorageKey: "public/kwantu-wellness-tea_06aa39c7_ad80b8bd.jpg",
     items: [
       {
         slug: "kenyan-feast",
@@ -106,7 +105,7 @@ const demoVendors = [
           "Spice Route Kenya prepares East African menus for home celebrations, cultural events, and office gatherings, with every table shaped around hospitality.",
         price: "From $180",
         type: "service" as const,
-        image: "/manus-storage/kwantu-hero-caterer_500a9501_b0867b9e.jpg",
+        image: "public/kwantu-hero-caterer_500a9501_b0867b9e.jpg",
         size: "tall",
       },
       {
@@ -116,7 +115,7 @@ const demoVendors = [
           "A fragrant spice mix by Spice Route Kenya, blended for roasted vegetables, grilled proteins, and deep, smoky comfort.",
         price: "$18.00",
         type: "product" as const,
-        image: "/manus-storage/kwantu-wellness-tea_06aa39c7_ad80b8bd.jpg",
+        image: "public/kwantu-wellness-tea_06aa39c7_ad80b8bd.jpg",
         size: "short",
       },
     ],
@@ -135,8 +134,8 @@ const demoVendors = [
     headline: "Language, heritage, and story circles for all ages",
     description:
       "Live interactive Yoruba conversation sessions and cultural discovery workshops.",
-    logoUrl: "/manus-storage/kwantu-tutor-family_96516297_e66523e7.jpg",
-    coverUrl: "/manus-storage/kwantu-tutor-family_96516297_e66523e7.jpg",
+    logoStorageKey: "public/kwantu-tutor-family_96516297_e66523e7.jpg",
+    coverStorageKey: "public/kwantu-tutor-family_96516297_e66523e7.jpg",
     items: [
       {
         slug: "yoruba-immersion",
@@ -145,7 +144,7 @@ const demoVendors = [
           "Studio Yorùbá offers one-to-one sessions that give children a warm place to hear, practise, and carry language into daily family life.",
         price: "$35 / hr",
         type: "service" as const,
-        image: "/manus-storage/kwantu-tutor-family_96516297_e66523e7.jpg",
+        image: "public/kwantu-tutor-family_96516297_e66523e7.jpg",
         size: "short",
       },
       {
@@ -155,7 +154,7 @@ const demoVendors = [
           "A conversational setting for adults building confidence with Yorùbá sounds, everyday phrases, and cultural context.",
         price: "$20 / session",
         type: "service" as const,
-        image: "/manus-storage/kwantu-tutor-family_96516297_e66523e7.jpg",
+        image: "public/kwantu-tutor-family_96516297_e66523e7.jpg",
         size: "tall",
       },
     ],
@@ -174,8 +173,8 @@ const demoVendors = [
     headline: "Protective styling and natural crown care",
     description:
       "Expert braiding, loc maintenance, and bespoke bridal hair consultations.",
-    logoUrl: "/manus-storage/kwantu-braider_2d92759f_6d3ffd6a.jpg",
-    coverUrl: "/manus-storage/kwantu-braider_2d92759f_6d3ffd6a.jpg",
+    logoStorageKey: "public/kwantu-braider_2d92759f_6d3ffd6a.jpg",
+    coverStorageKey: "public/kwantu-braider_2d92759f_6d3ffd6a.jpg",
     items: [
       {
         slug: "braid-consult",
@@ -184,7 +183,7 @@ const demoVendors = [
           "Mama Africa Braids combines tailored consultation with protective styling, so every appointment begins with healthy hair and your desired look.",
         price: "$160.00",
         type: "service" as const,
-        image: "/manus-storage/kwantu-braider_2d92759f_6d3ffd6a.jpg",
+        image: "public/kwantu-braider_2d92759f_6d3ffd6a.jpg",
         size: "tall",
       },
       {
@@ -194,7 +193,7 @@ const demoVendors = [
           "A focused natural-hair care session from Mama Africa Braids, centred on scalp wellbeing, moisture, and sustainable maintenance.",
         price: "$70.00",
         type: "service" as const,
-        image: "/manus-storage/kwantu-braider_2d92759f_6d3ffd6a.jpg",
+        image: "public/kwantu-braider_2d92759f_6d3ffd6a.jpg",
         size: "short",
       },
     ],
@@ -202,6 +201,10 @@ const demoVendors = [
 ];
 
 async function seed() {
+  if (process.env.NODE_ENV === "production" || process.env.ENABLE_DEMO_ACCOUNTS !== "true") {
+    throw new Error("Demo seeding is local-only; set ENABLE_DEMO_ACCOUNTS=true outside production.");
+  }
+  if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required to seed demo data");
   const connection = await mysql.createConnection(process.env.DATABASE_URL!);
   const db = drizzle(connection);
 
@@ -381,8 +384,8 @@ async function seed() {
         location: v.location,
         serviceArea: "North America",
         remoteAvailable: v.category === "education-learning",
-        logoUrl: v.logoUrl,
-        coverUrl: v.coverUrl,
+        logoStorageKey: v.logoStorageKey,
+        coverStorageKey: v.coverStorageKey,
       });
       storefrontId = s.insertId;
     } else {
@@ -393,8 +396,8 @@ async function seed() {
           displayName: v.businessName,
           headline: v.headline,
           description: v.description,
-          logoUrl: v.logoUrl,
-          coverUrl: v.coverUrl,
+          logoStorageKey: v.logoStorageKey,
+          coverStorageKey: v.coverStorageKey,
         })
         .where(eq(storefronts.id, storefrontId));
     }
@@ -438,11 +441,12 @@ async function seed() {
 
       // Add media gallery
       await db.delete(listingMedia).where(eq(listingMedia.listingId, lId));
-      const urls = (item as any).gallery || [item.image];
+      const keys = (item as any).gallery || [item.image];
       await db.insert(listingMedia).values(
-        urls.map((url: string, idx: number) => ({
+        keys.map((key: string, idx: number) => ({
           listingId: lId,
-          url,
+          url: `/media/${key}`,
+          storageKey: key,
           altText: `${item.title} image ${idx + 1}`,
           sortOrder: idx,
         }))

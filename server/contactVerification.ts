@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomInt } 
 import { ENV } from "./_core/env";
 
 export type VerificationChannel = "email" | "phone";
-export type VerificationPurpose = "email_ownership" | "phone_ownership";
+export type VerificationPurpose = "email_ownership" | "phone_ownership" | "email_change";
 
 export const OTP_TTL_MS = 10 * 60_000;
 export const OTP_RESEND_COOLDOWN_MS = 60_000;

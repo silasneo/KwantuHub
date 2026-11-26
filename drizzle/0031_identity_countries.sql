@@ -1,0 +1,1 @@
+ALTER TABLE `accountOnboarding` MODIFY COLUMN `countryCode` varchar(2) NOT NULL;

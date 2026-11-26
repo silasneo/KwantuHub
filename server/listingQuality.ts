@@ -41,7 +41,7 @@ export function evaluateListingQuality(listing: {
     score += 20;
   } else if (mediaCount >= 1) {
     score += 10;
-    reasons.push("Single image provided (2+ recommended)");
+    if (mediaCount === 1) reasons.push("Single image provided (2+ recommended)");
   } else {
     reasons.push("No listing images uploaded");
   }

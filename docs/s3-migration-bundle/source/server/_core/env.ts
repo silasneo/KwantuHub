@@ -1,0 +1,30 @@
+export const ENV = {
+  appId: process.env.VITE_APP_ID ?? "",
+  cookieSecret: process.env.JWT_SECRET ?? "",
+  databaseUrl: process.env.DATABASE_URL ?? "",
+  oAuthServerUrl: process.env.OAUTH_SERVER_URL ?? "",
+  ownerOpenId: process.env.OWNER_OPEN_ID ?? "",
+  isProduction: process.env.NODE_ENV === "production",
+  forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
+  forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  sendPulseClientId: process.env.SENDPULSE_CLIENT_ID ?? "",
+  sendPulseClientSecret: process.env.SENDPULSE_CLIENT_SECRET ?? "",
+  sendPulseApiKey: process.env.SENDPULSE_API_KEY ?? "",
+  sendPulseApiBaseUrl: process.env.SENDPULSE_API_BASE_URL ?? "https://api.sendpulse.com",
+  sendPulseFromEmail:
+    process.env.SENDPULSE_API_FROM_EMAIL ?? process.env.SENDPULSE_FROM_EMAIL ?? "",
+  sendPulseFromName:
+    process.env.SENDPULSE_API_FROM_NAME ?? process.env.SENDPULSE_FROM_NAME ?? "KwantuHub",
+  sendPulseWebhookToken:
+    process.env.SENDPULSE_WEBHOOK_TOKEN ?? process.env.SENDPULSE_WEBHOOK_SECRET ?? "",
+  turnstileSecret: process.env.TURNSTILE_SECRET_KEY ?? "",
+  turnstileSiteKey: process.env.VITE_TURNSTILE_SITE_KEY ?? "",
+  turnstileExpectedHostname: process.env.TURNSTILE_EXPECTED_HOSTNAME ?? "",
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? "",
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN ?? "",
+  twilioVerifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID ?? "",
+  diditApiKey: process.env.DIDIT_API_KEY ?? "",
+  diditWorkflowId: process.env.DIDIT_WORKFLOW_ID ?? "",
+  diditWebhookSecret: process.env.DIDIT_WEBHOOK_SECRET ?? "",
+  appUrl: process.env.APP_URL ?? "https://kwantumkt-lgpadidm.manus.space",
+};

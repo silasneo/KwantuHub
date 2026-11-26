@@ -1,74 +1,38 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { mediaUrl } from "@/lib/storage";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
-
-const heroSlides = [
-  {
-    id: "01",
-    label: "The marketplace introduction",
-    eyebrow: "KWANTUHUB: THE AFRICAN DIASPORA MARKETPLACE",
-    headline: "Where the diaspora",
-    emphasis: "finds home.",
-    description:
-      "Fabrics, food, language tutors, and wedding services from verified diaspora creators across North America.",
-    primaryLabel: "Explore Marketplace",
-    primaryHref: "/marketplace",
-    secondaryLabel: "List Your Business",
-    secondaryHref: "/vendor/onboarding",
-    note: "Meet the people behind the work before you make an inquiry.",
-    image: "/manus-storage/kwantu-hero-fashion-maker_20399257_99e7dc6b.jpg",
-    alt: "Diaspora textile vendor arranging a hand-dyed textile",
-  },
-  {
-    id: "02",
-    label: "Featured vendor spotlight",
-    eyebrow: "VENDOR'S NOTE — VERIFIED VENDOR",
-    headline: "Meet the hands",
-    emphasis: "behind the heirloom.",
-    description:
-      "Aunty Eki’s Ankara brings hand-selected textiles, thoughtful styling, and the energy of a familiar market stall to Houston and beyond.",
-    primaryLabel: "Explore Aunty Eki’s archive",
-    primaryHref: "/vendors/aunty-eki-s-ankara",
-    secondaryLabel: "Meet more vendors",
-    secondaryHref: "/vendors",
-    note: "One storefront, a lifetime of pattern, ceremony, and memory.",
-    image: "/manus-storage/kwantu-ceremony-tailor_6da99e5d_14bae697.jpg",
-    alt: "Tailor preparing a garment for a family celebration",
-  },
-  {
-    id: "03",
-    label: "Cultural language and heritage",
-    eyebrow: "HERITAGE CONNECTION — LIVE TUTORING",
-    headline: "Language is a",
-    emphasis: "living address.",
-    description:
-      "Gentle, family-centred Yorùbá sessions, conversational circles, and tutors who keep the sounds of home alive across time zones.",
-    primaryLabel: "Browse Language Offerings",
-    primaryHref: "/marketplace?category=education-learning",
-    secondaryLabel: "Explore All Services",
-    secondaryHref: "/marketplace?type=service",
-    note: "Small group circles and one-on-one immersion classes.",
-    image: "/manus-storage/kwantu-tutor-family_96516297_e66523e7.jpg",
-    alt: "Family enjoying language storytelling session together",
-  },
-];
+import { defaultHeroSlides } from "@shared/siteContent";
 
 export default function Home() {
   const [activeSlide, setActiveSlide] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const heroQuery = trpc.siteContent.heroSlides.useQuery(undefined, {
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+  const heroSlides = heroQuery.data ?? defaultHeroSlides;
 
   // Auto-advance hero slides every 7 seconds
   useEffect(() => {
+    if (
+      paused ||
+      heroSlides.length < 2 ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
     const timer = setInterval(() => {
       setActiveSlide(prev => (prev + 1) % heroSlides.length);
     }, 7000);
     return () => clearInterval(timer);
-  }, []);
+  }, [paused, heroSlides.length]);
 
-  const slide = heroSlides[activeSlide];
+  const slide = heroSlides[activeSlide % Math.max(1, heroSlides.length)];
 
   const { data: categories } = trpc.categories.list.useQuery();
-  const { data: vendors } = trpc.vendors.list.useQuery();
+  const { data: vendorData } = trpc.vendors.list.useQuery({ pageSize: 4 });
+  const vendors = vendorData?.items;
 
   return (
     <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
@@ -76,126 +40,151 @@ export default function Home() {
 
       <main className="flex-1">
         {/* Hero Slider Section matching Prototype */}
-        <section className="bg-[#0a0a0a] text-[#f0e8dc] relative overflow-hidden border-b border-[#222]">
-          {/* Background image container with cross-fade */}
-          <div
-            className="absolute inset-0 bg-cover bg-center transition-all duration-1000 opacity-25 filter grayscale-[30%]"
-            style={{ backgroundImage: `url(${slide.image})` }}
-          />
+        {heroQuery.error && (
+          <p role="alert">
+            Homepage updates are unavailable.{" "}
+            <button onClick={() => heroQuery.refetch()} className="underline">
+              Retry
+            </button>
+          </p>
+        )}
+        {slide && (
+          <section
+            aria-label="Marketplace highlights"
+            aria-roledescription="carousel"
+            className="bg-[#0a0a0a] text-[#f0e8dc] relative overflow-hidden border-b border-[#222]"
+          >
+            {/* Background image container with cross-fade */}
+            <div
+              role="img"
+              aria-label={slide.alt}
+              className="absolute inset-0 bg-cover bg-center transition-all duration-1000 opacity-25 filter grayscale-[30%]"
+              style={{ backgroundImage: `url(${slide.image})` }}
+            />
 
-          <div className="relative max-w-6xl mx-auto px-4 sm:px-8 py-20 sm:py-28 z-10">
-            <span className="text-xs font-bold uppercase tracking-widest text-[#d71466] mb-4 block">
-              {slide.eyebrow}
-            </span>
+            <div className="relative max-w-6xl mx-auto px-4 sm:px-8 py-20 sm:py-28 z-10">
+              <span className="text-xs font-bold uppercase tracking-widest text-[#d71466] mb-4 block">
+                {slide.eyebrow}
+              </span>
 
-            <h1 className="text-5xl sm:text-7xl md:text-8xl font-serif font-bold tracking-tight leading-[0.95] max-w-4xl text-white mb-6">
-              {slide.headline}{" "}
-              <span className="italic font-normal">{slide.emphasis}</span>
-            </h1>
+              <h1 className="text-5xl sm:text-7xl md:text-8xl font-serif font-bold tracking-tight leading-[0.95] max-w-4xl text-white mb-6">
+                {slide.headline}{" "}
+                <span className="italic font-normal">{slide.emphasis}</span>
+              </h1>
 
-            <p className="text-lg sm:text-xl text-[#d1c8bd] max-w-2xl font-serif leading-relaxed mb-10">
-              {slide.description}
-            </p>
+              <p className="text-lg sm:text-xl text-[#d1c8bd] max-w-2xl font-serif leading-relaxed mb-10">
+                {slide.description}
+              </p>
 
-            <div className="flex flex-wrap gap-4 items-center">
-              <Link
-                href={slide.primaryHref}
-                className="text-xs font-bold uppercase tracking-wider text-white brand-gradient px-7 py-3.5 rounded hover:opacity-95 transition"
-              >
-                {slide.primaryLabel} →
-              </Link>
-              <Link
-                href={slide.secondaryHref}
-                className="text-xs font-bold uppercase tracking-wider text-[#0a0a0a] bg-white px-7 py-3.5 rounded hover:bg-[#eae2d5] transition"
-              >
-                {slide.secondaryLabel}
-              </Link>
-            </div>
-
-            {/* Slider Controls */}
-            <div className="mt-16 pt-8 border-t border-[#222] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 text-xs">
-              <div className="flex items-center gap-3">
-                <span className="font-bold text-white font-mono">
-                  {slide.id}
-                </span>
-                <span className="text-[#888]">{slide.label}</span>
+              <div className="flex flex-wrap gap-4 items-center">
+                <Link
+                  href={slide.primaryHref}
+                  className="text-xs font-bold uppercase tracking-wider text-white brand-gradient px-7 py-3.5 rounded hover:opacity-95 transition"
+                >
+                  {slide.primaryLabel} →
+                </Link>
+                <Link
+                  href={slide.secondaryHref}
+                  className="text-xs font-bold uppercase tracking-wider text-[#0a0a0a] bg-white px-7 py-3.5 rounded hover:bg-[#eae2d5] transition"
+                >
+                  {slide.secondaryLabel}
+                </Link>
               </div>
 
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() =>
-                    setActiveSlide(
-                      prev => (prev - 1 + heroSlides.length) % heroSlides.length
-                    )
-                  }
-                  className="w-8 h-8 rounded-full border border-[#444] text-white flex items-center justify-center hover:bg-[#222] transition cursor-pointer"
-                  aria-label="Previous slide"
-                >
-                  ‹
-                </button>
-                <div className="flex gap-2">
-                  {heroSlides.map((s, idx) => (
-                    <button
-                      key={s.id}
-                      onClick={() => setActiveSlide(idx)}
-                      className={`h-1.5 rounded-full transition-all cursor-pointer ${
-                        activeSlide === idx
-                          ? "w-8 bg-[#d71466]"
-                          : "w-2 bg-[#444]"
-                      }`}
-                      aria-label={`Go to slide ${s.id}`}
-                    />
-                  ))}
+              {/* Slider Controls */}
+              <div className="mt-16 pt-8 border-t border-[#222] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 text-xs">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setPaused(value => !value)}
+                    aria-pressed={paused}
+                    className="underline"
+                  >
+                    {paused ? "Play slides" : "Pause slides"}
+                  </button>
+                  <span className="font-bold text-white font-mono">
+                    {slide.id}
+                  </span>
+                  <span className="text-[#888]">{slide.label}</span>
                 </div>
-                <button
-                  onClick={() =>
-                    setActiveSlide(prev => (prev + 1) % heroSlides.length)
-                  }
-                  className="w-8 h-8 rounded-full border border-[#444] text-white flex items-center justify-center hover:bg-[#222] transition cursor-pointer"
-                  aria-label="Next slide"
-                >
-                  ›
-                </button>
-              </div>
-            </div>
 
-            {/* Four Trust Pillars */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-12 pt-8 border-t border-[#222] text-xs">
-              <div>
-                <b className="text-white block text-sm font-serif">
-                  Verified Diaspora Vendors
-                </b>
-                <span className="text-[#888]">
-                  Built around real people and storefronts
-                </span>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() =>
+                      setActiveSlide(
+                        prev =>
+                          (prev - 1 + heroSlides.length) % heroSlides.length
+                      )
+                    }
+                    className="w-8 h-8 rounded-full border border-[#444] text-white flex items-center justify-center hover:bg-[#222] transition cursor-pointer"
+                    aria-label="Previous slide"
+                  >
+                    ‹
+                  </button>
+                  <div className="flex gap-2">
+                    {heroSlides.map((s, idx) => (
+                      <button
+                        key={s.id}
+                        onClick={() => setActiveSlide(idx)}
+                        className={`h-1.5 rounded-full transition-all cursor-pointer ${
+                          activeSlide === idx
+                            ? "w-8 bg-[#d71466]"
+                            : "w-2 bg-[#444]"
+                        }`}
+                        aria-label={`Go to slide ${s.id}`}
+                      />
+                    ))}
+                  </div>
+                  <button
+                    onClick={() =>
+                      setActiveSlide(prev => (prev + 1) % heroSlides.length)
+                    }
+                    className="w-8 h-8 rounded-full border border-[#444] text-white flex items-center justify-center hover:bg-[#222] transition cursor-pointer"
+                    aria-label="Next slide"
+                  >
+                    ›
+                  </button>
+                </div>
               </div>
-              <div>
-                <b className="text-white block text-sm font-serif">
-                  US, CA & MX Coverage
-                </b>
-                <span className="text-[#888]">
-                  Find community across North America
-                </span>
-              </div>
-              <div>
-                <b className="text-white block text-sm font-serif">
-                  Direct Community Inquiries
-                </b>
-                <span className="text-[#888]">
-                  Start a conversation before you commit
-                </span>
-              </div>
-              <div>
-                <b className="text-white block text-sm font-serif">
-                  Discovery with Dignity
-                </b>
-                <span className="text-[#888]">
-                  A platform that puts people before clicks
-                </span>
+
+              {/* Four Trust Pillars */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-12 pt-8 border-t border-[#222] text-xs">
+                <div>
+                  <b className="text-white block text-sm font-serif">
+                    Verified Diaspora Vendors
+                  </b>
+                  <span className="text-[#888]">
+                    Built around real people and storefronts
+                  </span>
+                </div>
+                <div>
+                  <b className="text-white block text-sm font-serif">
+                    US, CA & MX Coverage
+                  </b>
+                  <span className="text-[#888]">
+                    Find community across North America
+                  </span>
+                </div>
+                <div>
+                  <b className="text-white block text-sm font-serif">
+                    Direct Community Inquiries
+                  </b>
+                  <span className="text-[#888]">
+                    Start a conversation before you commit
+                  </span>
+                </div>
+                <div>
+                  <b className="text-white block text-sm font-serif">
+                    Discovery with Dignity
+                  </b>
+                  <span className="text-[#888]">
+                    A platform that puts people before clicks
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
+        )}
 
         {/* 02 — Cultural Aisles */}
         <section className="py-20 px-4 sm:px-8 max-w-6xl mx-auto">
@@ -265,11 +254,17 @@ export default function Home() {
                     className="group bg-white border border-[#d9d0c4] rounded overflow-hidden shadow-xs hover:border-[#d71466] hover:shadow-md transition flex flex-col"
                   >
                     <div className="h-44 bg-[#0a0a0a] relative overflow-hidden">
-                      {v.storefront?.coverUrl || v.storefront?.logoUrl ? (
+                      {v.storefront?.coverStorageKey ||
+                      v.storefront?.coverUrl ||
+                      v.storefront?.logoStorageKey ||
+                      v.storefront?.logoUrl ? (
                         <img
-                          src={
-                            v.storefront.coverUrl || v.storefront.logoUrl || ""
-                          }
+                          src={mediaUrl(
+                            v.storefront.coverStorageKey ||
+                              v.storefront.coverUrl ||
+                              v.storefront.logoStorageKey ||
+                              v.storefront.logoUrl
+                          )}
                           alt={v.businessName}
                           className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
                         />
@@ -309,7 +304,7 @@ export default function Home() {
         <section className="py-20 px-4 sm:px-8 max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
           <div className="rounded overflow-hidden shadow-md h-96">
             <img
-              src="/manus-storage/kwantu-wellness-tea_06aa39c7_ad80b8bd.jpg"
+              src="/media/public/kwantu-wellness-tea_06aa39c7_ad80b8bd.jpg"
               alt="Diaspora herbal tea and handmade tableware"
               className="w-full h-full object-cover"
             />

@@ -1,4 +1,4 @@
-import { REST_ALIAS_ROUTES, REST_OPERATION_REGISTRY, REST_QUERY_OPERATIONS } from "./apiV1Contract";
+import { REST_ALIAS_ROUTES, REST_MUTATION_OPERATIONS, REST_OPERATION_REGISTRY, REST_QUERY_OPERATIONS } from "./apiV1Contract";
 
 export const openapiDocument = {
   openapi: "3.0.3",
@@ -75,7 +75,7 @@ export const openapiDocument = {
         required: ["email", "password"],
         properties: {
           email: { type: "string", format: "email" },
-          password: { type: "string", minLength: 6 },
+          password: { type: "string", minLength: 1, maxLength: 1024, description: "Login accepts existing passwords. New passwords require at least 8 characters and at most 72 UTF-8 bytes." },
         },
       },
     },
@@ -201,7 +201,7 @@ export const openapiDocument = {
     "/api/trpc/auth.register": {
       post: {
         tags: ["Authentication"],
-        summary: "Register a buyer or vendor account and issue a JWT cookie",
+        summary: "Create a buyer-authorized account with buyer/vendor signup intent; verification and onboarding follow",
         requestBody: {
           required: true,
           content: {
@@ -252,7 +252,7 @@ export const openapiDocument = {
     "/api/trpc/auth.logout": {
       post: {
         tags: ["Authentication"],
-        summary: "Clear the JWT session cookie",
+        summary: "Revoke the current database-backed session and clear its JWT cookie",
         security: [{ KwantuJwtCookie: [] }],
         requestBody: {
           required: true,
@@ -417,7 +417,7 @@ export const openapiDocument = {
     "/api/trpc/buyer.inquiries": {
       get: {
         tags: ["Buyer"],
-        summary: "List the current buyer's inquiries and messages",
+        summary: "Page the current buyer's inquiry summaries without message histories",
         security: [{ KwantuJwtCookie: [] }],
         parameters: [{ $ref: "#/components/parameters/TrpcInput" }],
         responses: {
@@ -669,7 +669,7 @@ export const openapiDocument = {
     "/api/trpc/vendor.inquiries": {
       get: {
         tags: ["Vendor Portal"],
-        summary: "List current vendor inquiries and messages",
+        summary: "Page current vendor inquiry summaries without message histories",
         security: [{ KwantuJwtCookie: [] }],
         parameters: [{ $ref: "#/components/parameters/TrpcInput" }],
         responses: {
@@ -814,7 +814,7 @@ export const openapiDocument = {
     "/api/trpc/admin.pendingVendors": {
       get: {
         tags: ["Admin"],
-        summary: "List pending vendor applications",
+        summary: "List vendors for suspension and re-enablement",
         security: [{ KwantuJwtCookie: [] }],
         parameters: [{ $ref: "#/components/parameters/TrpcInput" }],
         responses: {
@@ -907,7 +907,7 @@ Object.assign(openapiDocument.paths as any, {
   "/api/trpc/auth.changePassword": {
     post: {
       tags: ["Authentication"],
-      summary: "Rotate the current user's password",
+      summary: "Rotate the current user's password and revoke all sessions",
       security: [{ KwantuJwtCookie: [] }],
       requestBody: {
         required: true,
@@ -918,7 +918,7 @@ Object.assign(openapiDocument.paths as any, {
         },
       },
       responses: {
-        "200": { description: "Password updated" },
+        "200": { description: "Password updated; all sessions revoked. Sign in again." },
         "400": {
           description: "Invalid current password or password policy failure",
         },
@@ -930,7 +930,7 @@ Object.assign(openapiDocument.paths as any, {
     post: {
       tags: ["Marketplace"],
       summary:
-        "Verified-buyer, Turnstile-protected, rate-limited reveal of vendor contact channels",
+        "Rate-limited anonymous access to vendor-selected public contact channels",
       requestBody: {
         required: true,
         content: {
@@ -941,8 +941,6 @@ Object.assign(openapiDocument.paths as any, {
       },
       responses: {
         "200": { description: "Available contact channels" },
-        "401": { description: "Authentication required" },
-        "403": { description: "Verified email and phone required" },
         "404": { description: "Listing not found" },
         "429": { description: "Reveal rate limit exceeded" },
       },
@@ -1402,6 +1400,25 @@ Object.assign(openapiDocument.paths as any, {
   },
 };
 
+for (const domain of ["buyer", "vendor"]) {
+  Object.assign(openapiDocument.paths, {
+    [`/api/trpc/${domain}.messages`]: {
+      get: {
+        tags: [domain === "buyer" ? "Buyer" : "Vendor"],
+        summary: "Page visible messages for an authenticated conversation participant",
+        description: "Requires inquiryId. page defaults to 1 (newest slice); pageSize defaults to 20, maximum 50. Items are chronological within each slice. Hidden messages and moderation metadata are excluded. Only the buyer or owning vendor may read; there is no administrator bypass.",
+        security: [{ KwantuJwtCookie: [] }],
+        parameters: [{ $ref: "#/components/parameters/TrpcInput" }],
+        responses: {
+          "200": { description: "{ items, pagination: { page, pageSize, total, totalPages } } inside the tRPC result" },
+          "401": { description: "Authentication required" },
+          "404": { description: "Conversation not found or not owned" },
+        },
+      },
+    },
+  });
+}
+
 // Versioned REST compatibility contract. Business rules remain implemented by
 // the tRPC procedures; this route documents the stable external HTTP shape.
 (openapiDocument.components as any).schemas.RestSuccessEnvelope = {
@@ -1463,12 +1480,14 @@ Object.assign(openapiDocument.paths as any, {
       "401": { description: "Authentication required", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
       "403": { description: "Insufficient role or ownership", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
       "404": { description: "Resource or procedure not found", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
+      "412": { description: "Required verification or provider configuration is incomplete", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
       "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
     },
   },
   post: {
     tags: ["REST v1"],
     summary: "Invoke a versioned REST mutation procedure",
+    description: Object.entries(REST_MUTATION_OPERATIONS).map(([key, value]) => `${key}: ${value}`).join("\\n"),
     requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: true } } } },
     responses: {
       "200": { description: "Successful procedure response", content: { "application/json": { schema: { $ref: "#/components/schemas/RestSuccessEnvelope" } } } },
@@ -1476,6 +1495,7 @@ Object.assign(openapiDocument.paths as any, {
       "401": { description: "Authentication required", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
       "403": { description: "Insufficient role or ownership", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
       "404": { description: "Resource or procedure not found", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
+      "412": { description: "Required verification or provider configuration is incomplete", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
       "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { $ref: "#/components/schemas/RestErrorEnvelope" } } } },
     },
   },

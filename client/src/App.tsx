@@ -16,9 +16,13 @@ import AdminDashboard from "./pages/AdminDashboard";
 import UserProfile from "./pages/UserProfile";
 import AboutPage from "./pages/About";
 import LoginPage from "./pages/LoginPage";
+import AccountVerification from "./pages/AccountVerification";
+import ResetPassword from "./pages/ResetPassword";
 import NotFound from "./pages/NotFound";
 import { PrivacyPolicyPage, TermsOfServicePage } from "./pages/LegalPages";
 import SupportPage from "./pages/SupportPage";
+import { VerifiedAccountGate } from "./components/VerifiedAccountGate";
+import { RouteSEO } from "./components/SEOHead";
 
 function Router() {
   return (
@@ -29,13 +33,15 @@ function Router() {
       <Route path="/vendors/:slug" component={VendorStorefront} />
       <Route path="/storefronts/:slug" component={VendorStorefront} />
       <Route path="/listings/:slug" component={ListingDetail} />
-      <Route path="/account" component={BuyerAccount} />
-      <Route path="/profile" component={UserProfile} />
-      <Route path="/vendor" component={VendorPortal} />
-      <Route path="/vendor/onboarding" component={VendorOnboarding} />
+      <Route path="/account">{() => <VerifiedAccountGate><BuyerAccount /></VerifiedAccountGate>}</Route>
+      <Route path="/profile">{() => <VerifiedAccountGate><UserProfile /></VerifiedAccountGate>}</Route>
+      <Route path="/vendor">{() => <VerifiedAccountGate><VendorPortal /></VerifiedAccountGate>}</Route>
+      <Route path="/vendor/onboarding">{() => <VerifiedAccountGate><VendorOnboarding /></VerifiedAccountGate>}</Route>
       <Route path="/admin" component={AdminDashboard} />
       <Route path="/about" component={AboutPage} />
       <Route path="/login" component={LoginPage} />
+      <Route path="/verify-account" component={AccountVerification} />
+      <Route path="/reset-password" component={ResetPassword} />
       <Route path="/privacy" component={PrivacyPolicyPage} />
       <Route path="/terms" component={TermsOfServicePage} />
       <Route path="/support" component={SupportPage} />
@@ -50,6 +56,7 @@ export default function App() {
       <ThemeProvider defaultTheme="light">
         <TooltipProvider>
           <Toaster />
+          <RouteSEO />
           <Router />
         </TooltipProvider>
       </ThemeProvider>

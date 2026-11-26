@@ -6,6 +6,20 @@ import {
 } from "./marketplaceReporting";
 
 describe("Stage 4F aggregate reporting and data privacy sanitization", () => {
+  it("quotes every text cell and neutralizes spreadsheet formula prefixes", () => {
+    const csv = generateAggregateCsv([
+      {
+        domain: '=HYPERLINK("x")',
+        metric: "a,b",
+        value: 2,
+        rate: "+2",
+        note: 'Line "one"\nline two',
+      },
+    ]);
+    expect(csv).toContain(
+      `"'=HYPERLINK(""x"")","a,b",2,"'+2","Line ""one""\nline two"`
+    );
+  });
   it("generates valid RFC-compliant CSV with aggregate metrics", () => {
     const rows: AggregateReportRow[] = [
       {
@@ -27,7 +41,9 @@ describe("Stage 4F aggregate reporting and data privacy sanitization", () => {
     const csv = generateAggregateCsv(rows);
     expect(csv).toContain("Domain,Metric,Value,Rate,Note");
     expect(csv).toContain('"Listing Quality","High Quality Ratio",45,"75%"');
-    expect(csv).toContain('"Review Integrity","Suspicious Review Count",2,"3%"');
+    expect(csv).toContain(
+      '"Review Integrity","Suspicious Review Count",2,"3%"'
+    );
   });
 
   it("strictly strips private notes, raw message bodies, and identity evidence from report payloads", () => {

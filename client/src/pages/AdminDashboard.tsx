@@ -1,7 +1,18 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
+import { PhoneCountrySettings } from "@/components/PhoneCountrySettings";
+import { EmailPolicySettings } from "@/components/EmailPolicySettings";
+import { useDashboardTab } from "@/hooks/useDashboardTab";
+import { PortalRequestStatus } from "@/components/PortalRequestStatus";
+import { HeroSlideSettings } from "@/components/HeroSlideSettings";
+import { AdminListingEditor } from "@/components/AdminListingEditor";
+import { AdminShell, type AdminNavGroup } from "@/components/AdminShell";
+import {
+  BarChart3, Bell, Flag, Image as ImageIcon, LayoutDashboard, MailCheck, Package, Scale,
+  ShieldCheck, Smartphone, Star, Store, Tags, ToggleRight, Users,
+} from "lucide-react";
 
 type AdminTab =
   | "overview"
@@ -15,12 +26,26 @@ type AdminTab =
   | "reports"
   | "categories"
   | "flags"
+  | "sms-countries"
+  | "email-policy"
   | "notifications";
+type ListingStatus = "draft" | "pending" | "approved" | "rejected" | "published" | "hidden" | "archived";
 
 export default function AdminDashboard() {
   const { user, isAuthenticated } = useAuth();
   const utils = trpc.useUtils();
-  const [activeTab, setActiveTab] = useState<AdminTab>("overview");
+  const { activeTab, setActiveTab, inquiryId } = useDashboardTab<AdminTab | "site-content">(["overview", "analytics", "vendors", "verification", "users", "listings", "reviews", "disputes", "reports", "categories", "flags", "sms-countries", "email-policy", "notifications", "site-content"], "overview");
+  const [directoryQuery, setDirectoryQuery] = useState("");
+  const [directoryPage, setDirectoryPage] = useState(1);
+  const [accountRole, setAccountRole] = useState<"buyer" | "vendor" | "admin" | "">("");
+  const [accountStatus, setAccountStatus] = useState<"active" | "suspended" | "">("");
+  const [vendorStatus, setVendorStatus] = useState<"pending" | "approved" | "rejected" | "suspended" | "">("");
+  const [listingStatus, setListingStatus] = useState<ListingStatus | "">("");
+  const [editingListingId, setEditingListingId] = useState<number>();
+  const [editingCategoryId, setEditingCategoryId] = useState<number>();
+  const [categoryOrder, setCategoryOrder] = useState(0);
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  useEffect(() => { setDirectoryPage(1); }, [activeTab, directoryQuery, accountRole, accountStatus, vendorStatus, listingStatus]);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategorySlug, setNewCategorySlug] = useState("");
   const [selectedReportInquiryId, setSelectedReportInquiryId] = useState<number | null>(null);
@@ -38,26 +63,32 @@ export default function AdminDashboard() {
   const [analyticsCategoryFilter, setAnalyticsCategoryFilter] = useState("");
   const [analyticsFromFilter, setAnalyticsFromFilter] = useState("");
   const [analyticsToFilter, setAnalyticsToFilter] = useState("");
+  useEffect(() => {
+    if (!inquiryId) return;
+    setSelectedReportInquiryId(inquiryId);
+    setReportStatusFilter("all");
+  }, [inquiryId]);
 
   const adminEnabled = isAuthenticated && user?.role === "admin";
-  const { data: pending, isLoading } = trpc.admin.pendingVendors.useQuery(
-    undefined,
-    { enabled: adminEnabled }
+  const overview = trpc.admin.overview.useQuery(undefined, { enabled: adminEnabled, staleTime: 60_000 });
+  const { data: pending, isLoading, error: pendingError } = trpc.admin.pendingVendors.useQuery(
+    { query: directoryQuery, page: directoryPage, status: vendorStatus || undefined },
+    { enabled: adminEnabled && activeTab === "vendors" }
   );
-  const { data: users } = trpc.admin.users.useQuery(undefined, {
+  const { data: users, error: usersError, isLoading: usersLoading } = trpc.admin.users.useQuery({ query: directoryQuery, page: directoryPage, role: accountRole || undefined, status: accountStatus || undefined }, {
     enabled: adminEnabled && activeTab === "users",
   });
-  const { data: listings } = trpc.admin.listings.useQuery(undefined, {
+  const { data: listings, error: listingsError, isLoading: listingsLoading } = trpc.admin.listings.useQuery({ query: directoryQuery, page: directoryPage, status: listingStatus || undefined }, {
     enabled: adminEnabled && activeTab === "listings",
   });
-  const { data: adminReviews } = trpc.admin.reviews.useQuery(undefined, {
+  const { data: adminReviews, error: reviewsError } = trpc.admin.reviews.useQuery(undefined, {
     enabled: adminEnabled && activeTab === "reviews",
   });
   const updateReviewStatusMutation = trpc.admin.updateReviewStatus.useMutation({
     onSuccess: () => utils.admin.reviews.invalidate(),
   });
-  const { data: categories } = trpc.admin.categories.useQuery(undefined, {
-    enabled: adminEnabled && (activeTab === "categories" || activeTab === "analytics"),
+  const { data: categories, error: categoriesError } = trpc.admin.categories.useQuery(undefined, {
+    enabled: adminEnabled && (activeTab === "categories" || activeTab === "analytics" || activeTab === "listings"),
   });
   const analyticsFilters = useMemo(() => ({
     vendorId: analyticsVendorFilter ? Number(analyticsVendorFilter) : undefined,
@@ -65,13 +96,21 @@ export default function AdminDashboard() {
     from: analyticsFromFilter || undefined,
     to: analyticsToFilter || undefined,
   }), [analyticsVendorFilter, analyticsCategoryFilter, analyticsFromFilter, analyticsToFilter]);
-  const { data: adminAnalytics } = trpc.admin.analytics.useQuery(analyticsFilters, {
+  const { data: adminAnalytics, error: analyticsError } = trpc.admin.analytics.useQuery(analyticsFilters, {
     enabled: adminEnabled && activeTab === "analytics",
   });
-  const { data: leadSummary } = trpc.admin.leadConversionSummary.useQuery(undefined, {
+  const exportReport = trpc.admin.exportReport.useMutation({
+    onSuccess: result => {
+      const url = URL.createObjectURL(new Blob([result.csv], { type: "text/csv;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url; link.download = result.filename; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+  });
+  const { data: leadSummary, error: leadError } = trpc.admin.leadConversionSummary.useQuery(analyticsFilters, {
     enabled: adminEnabled && activeTab === "analytics",
   });
-  const { data: disputes } = trpc.admin.disputes.useQuery(undefined, {
+  const { data: disputes, error: disputesError } = trpc.admin.disputes.useQuery(undefined, {
     enabled: adminEnabled && activeTab === "disputes",
   });
   const reportFilters = useMemo(() => ({
@@ -83,32 +122,32 @@ export default function AdminDashboard() {
     from: reportFromFilter || undefined,
     to: reportToFilter || undefined,
   }), [reportStatusFilter, reportConversationStateFilter, reportBuyerFilter, reportVendorFilter, reportListingFilter, reportFromFilter, reportToFilter]);
-  const { data: conversationReports } = trpc.admin.conversationReports.useQuery(reportFilters, {
+  const { data: conversationReports, error: reportsError } = trpc.admin.conversationReports.useQuery(reportFilters, {
     enabled: adminEnabled && activeTab === "reports",
   });
   const reportMessagesInput = useMemo(
     () => ({ inquiryId: selectedReportInquiryId || 1 }),
     [selectedReportInquiryId]
   );
-  const { data: reportMessages } = trpc.admin.conversationMessages.useQuery(reportMessagesInput, {
+  const { data: reportMessages, error: messagesError } = trpc.admin.conversationMessages.useQuery(reportMessagesInput, {
     enabled: adminEnabled && activeTab === "reports" && selectedReportInquiryId !== null,
   });
-  const { data: flags } = trpc.admin.featureFlags.useQuery(undefined, {
+  const { data: flags, error: flagsError } = trpc.admin.featureFlags.useQuery(undefined, {
     enabled: adminEnabled && activeTab === "flags",
   });
-  const { data: notificationSummary } = trpc.admin.notificationDeliverySummary.useQuery(undefined, {
+  const { data: notificationSummary, error: notificationError } = trpc.admin.notificationDeliverySummary.useQuery(undefined, {
     enabled: adminEnabled && activeTab === "notifications",
   });
-  const { data: notificationDeliveries } = trpc.admin.notificationDeliveries.useQuery({}, {
+  const { data: notificationDeliveries, error: deliveriesError } = trpc.admin.notificationDeliveries.useQuery({}, {
     enabled: adminEnabled && activeTab === "notifications",
   });
-  const { data: webhookEvents } = trpc.admin.notificationWebhookEvents.useQuery(undefined, {
+  const { data: webhookEvents, error: webhooksError } = trpc.admin.notificationWebhookEvents.useQuery(undefined, {
     enabled: adminEnabled && activeTab === "notifications",
   });
-  const { data: suppressions } = trpc.admin.notificationSuppressions.useQuery(undefined, {
+  const { data: suppressions, error: suppressionsError } = trpc.admin.notificationSuppressions.useQuery(undefined, {
     enabled: adminEnabled && activeTab === "notifications",
   });
-  const { data: emailPauseStatus } = trpc.admin.emailDeliveryPause.useQuery(undefined, {
+  const { data: emailPauseStatus, error: pauseError } = trpc.admin.emailDeliveryPause.useQuery(undefined, {
     enabled: adminEnabled && activeTab === "notifications",
   });
   const setEmailDeliveryPausedMutation = trpc.admin.setEmailDeliveryPaused.useMutation({
@@ -134,7 +173,7 @@ export default function AdminDashboard() {
     countryCode: verificationCountryFilter === "all" ? undefined : (verificationCountryFilter as any),
     provider: verificationProviderFilter === "all" ? undefined : (verificationProviderFilter as any),
   }), [verificationStatusFilter, verificationCountryFilter, verificationProviderFilter]);
-  const { data: verificationSessions } = trpc.admin.verificationSessions.useQuery(verificationFilters, {
+  const { data: verificationSessions, error: verificationError } = trpc.admin.verificationSessions.useQuery(verificationFilters, {
     enabled: adminEnabled && activeTab === "verification",
   });
   const reviewVerificationMutation = trpc.admin.reviewVerificationSession.useMutation({
@@ -143,10 +182,17 @@ export default function AdminDashboard() {
       utils.admin.pendingVendors.invalidate();
     },
   });
+  const { data: retentionStatus, error: retentionError } = trpc.admin.evidenceRetentionStatus.useQuery(undefined, {
+    enabled: adminEnabled && activeTab === "verification",
+  });
+  const evidenceHoldMutation = trpc.admin.setEvidenceLegalHold.useMutation({
+    onSuccess: () => { utils.admin.verificationSessions.invalidate(); utils.admin.evidenceRetentionStatus.invalidate(); },
+  });
 
   const decideMutation = trpc.admin.decideVendor.useMutation({
     onSuccess: () => utils.admin.pendingVendors.invalidate(),
   });
+  const resetAccountMutation = trpc.admin.requestAccountReset.useMutation();
   const escalateAccountMutation = trpc.admin.escalateAccount.useMutation({
     onSuccess: () => {
       utils.admin.users.invalidate();
@@ -170,7 +216,11 @@ export default function AdminDashboard() {
       utils.admin.categories.invalidate();
       setNewCategoryName("");
       setNewCategorySlug("");
+      setEditingCategoryId(undefined);
     },
+  });
+  const removeCategory = trpc.admin.removeCategory.useMutation({
+    onSuccess: () => { utils.admin.categories.invalidate(); utils.categories.list.invalidate(); utils.admin.listings.invalidate(); },
   });
   const flagMutation = trpc.admin.setFeatureFlag.useMutation({
     onSuccess: () => utils.admin.featureFlags.invalidate(),
@@ -200,69 +250,77 @@ export default function AdminDashboard() {
     );
   }
 
-  const tabs: Array<[AdminTab, string]> = [
-    ["overview", "Overview"],
-    ["analytics", "Analytics"],
-    ["vendors", `Vendors (${pending?.length || 0})`],
-    ["verification", `Verification (${verificationSessions?.length || 0})`],
-    ["users", "Users"],
-    ["listings", "Listings"],
-    ["reviews", "Reviews & Integrity"],
-    ["disputes", "Disputes"],
-    ["reports", "Conversation reports"],
-    ["categories", "Categories"],
-    ["flags", "Feature flags"],
-    ["notifications", "Notifications"],
+  const navGroups: AdminNavGroup<AdminTab | "site-content">[] = [
+    { title: "Dashboard", items: [
+      { key: "overview", label: "Overview", icon: LayoutDashboard },
+      { key: "analytics", label: "Analytics", icon: BarChart3 },
+    ] },
+    { title: "Marketplace", items: [
+      { key: "vendors", label: "Vendors", icon: Store, badge: overview.data?.pending || 0 },
+      { key: "listings", label: "Listings", icon: Package },
+      { key: "categories", label: "Categories", icon: Tags },
+      { key: "site-content", label: "Site content", icon: ImageIcon },
+    ] },
+    { title: "Trust & safety", items: [
+      { key: "verification", label: "Verification", icon: ShieldCheck, badge: verificationSessions?.length || 0 },
+      { key: "users", label: "Users", icon: Users },
+      { key: "reviews", label: "Reviews & integrity", icon: Star },
+      { key: "disputes", label: "Disputes", icon: Scale },
+      { key: "reports", label: "Conversation reports", icon: Flag },
+    ] },
+    { title: "Platform", items: [
+      { key: "flags", label: "Feature flags", icon: ToggleRight },
+      { key: "sms-countries", label: "SMS countries", icon: Smartphone },
+      { key: "email-policy", label: "Email screening", icon: MailCheck },
+      { key: "notifications", label: "Notifications", icon: Bell },
+    ] },
   ];
 
   return (
-    <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
-      <SiteHeader />
-      <main className="flex-1 max-w-6xl mx-auto px-4 sm:px-8 py-12 w-full">
-        <div className="mb-8">
-          <span className="text-xs font-bold uppercase tracking-widest text-[#d71466] block mb-2">
-            GOVERNANCE & TRUST
-          </span>
-          <h1 className="text-4xl sm:text-5xl font-serif font-bold text-[#0a0a0a]">
-            Admin <span className="italic font-normal">control room.</span>
-          </h1>
-          <p className="text-[#68635c] font-serif mt-1">
-            Manage vendors, marketplace content, users, categories, moderation,
-            and controlled platform experiments.
-          </p>
-        </div>
+    <AdminShell groups={navGroups} active={activeTab} onSelect={setActiveTab}>
 
-        <div className="flex gap-5 overflow-x-auto border-b border-[#d9d0c4] mb-8">
-          {tabs.map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActiveTab(key)}
-              className={`shrink-0 pb-3 text-xs font-bold uppercase tracking-wider border-b-2 ${activeTab === key ? "border-[#d71466] text-[#d71466]" : "border-transparent text-[#68635c]"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
+        <PortalRequestStatus
+          queries={[overview.error, pendingError, usersError, listingsError, reviewsError, categoriesError, analyticsError, leadError, disputesError, reportsError, messagesError, flagsError, notificationError, deliveriesError, webhooksError, suppressionsError, pauseError, verificationError].map(error => ({ error }))}
+          mutations={[exportReport, removeCategory, updateReviewStatusMutation, setEmailDeliveryPausedMutation, requeueOutboxMutation, releaseSuppressionMutation, reviewVerificationMutation, decideMutation, resetAccountMutation, escalateAccountMutation, updateListingMutation, updateDisputeMutation, updateConversationReportMutation, moderateMessageMutation, saveCategoryMutation, flagMutation, retryDeliveryMutation]}
+          onRetry={() => { utils.admin.invalidate(); }} />
+        {(isLoading || usersLoading || listingsLoading) && <p role="status">Loading administration data…</p>}
+        {activeTab === "site-content" && <HeroSlideSettings />}
+        {["users", "vendors", "listings"].includes(activeTab) && <section aria-label="Directory filters" className="bg-white border p-4 rounded mb-4 space-y-3">
+          <label className="block">Search name, email or listing title
+            <input className="border p-2 ml-2" value={directoryQuery} maxLength={160} onChange={event => setDirectoryQuery(event.target.value)} />
+          </label>
+          {activeTab === "users" && <>
+            <label>Role <select value={accountRole} onChange={event => setAccountRole(event.target.value as typeof accountRole)}><option value="">All roles</option><option value="buyer">Buyer</option><option value="vendor">Vendor</option><option value="admin">Admin</option></select></label>{" "}
+            <label>Status <select value={accountStatus} onChange={event => setAccountStatus(event.target.value as typeof accountStatus)}><option value="">All statuses</option><option value="active">Active</option><option value="suspended">Suspended</option></select></label>
+            <p className="text-sm">Administrator grants/revocations use the audited provisioning command. Vendor roles come from completed onboarding, not manual role changes.</p>
+          </>}
+          {activeTab === "vendors" && <label>Status <select value={vendorStatus} onChange={event => setVendorStatus(event.target.value as typeof vendorStatus)}><option value="">All statuses</option>{["pending", "approved", "rejected", "suspended"].map(status => <option key={status}>{status}</option>)}</select></label>}
+          {activeTab === "listings" && <label>Status <select value={listingStatus} onChange={event => setListingStatus(event.target.value as typeof listingStatus)}><option value="">All statuses</option>{["draft", "pending", "approved", "rejected", "published", "hidden", "archived"].map(status => <option key={status}>{status}</option>)}</select></label>}
+          <div className="flex gap-4 items-center">
+            <button disabled={directoryPage === 1} onClick={() => setDirectoryPage(page => page - 1)}>Previous</button>
+            <span>Page {directoryPage} (up to 25 results)</span>
+            <button disabled={directoryPage >= 2000 || (activeTab === "users" ? users?.length : activeTab === "vendors" ? pending?.length : listings?.length) !== 25}
+              onClick={() => setDirectoryPage(page => page + 1)}>Next</button>
+          </div>
+        </section>}
         {activeTab === "overview" && (
           <section className="space-y-6">
             <div className="portal-metrics">
               <div className="portal-metric">
-                <strong>{pending?.length || 0}</strong>
+                <strong>{overview.data?.pending ?? "—"}</strong>
                 <span>Pending vendors</span>
               </div>
               <div className="portal-metric">
-                <strong>Live</strong>
-                <span>JWT security</span>
+                <strong>{overview.data?.users ?? "—"}</strong>
+                <span>Accounts</span>
               </div>
               <div className="portal-metric">
-                <strong>On</strong>
-                <span>Audit logging</span>
+                <strong>{overview.data?.vendors ?? "—"}</strong>
+                <span>Vendors</span>
               </div>
               <div className="portal-metric">
-                <strong>Ready</strong>
-                <span>Swagger API</span>
+                <strong>{overview.data?.listings ?? "—"}</strong>
+                <span>Listings</span>
               </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -308,6 +366,8 @@ export default function AdminDashboard() {
               <p className="text-xs font-bold uppercase tracking-widest text-[#d71466]">PLATFORM INTELLIGENCE</p>
               <h2 className="font-serif text-3xl font-bold text-[#0a0a0a]">Inquiry funnel</h2>
               <p className="mt-1 font-serif text-sm text-[#68635c]">Aggregate discovery-to-resolution signals. Filters are admin-only and exclude message bodies and personally identifying buyer details.</p>
+              <button disabled={exportReport.isPending} onClick={() => exportReport.mutate(analyticsFilters)} className="border p-2 mt-3">Download aggregate CSV</button>
+              <p className="text-sm mt-2">Responses count distinct inquiries created in the selected period, with replies up to its end date. Closed counts reflect current state. Event ratios below are not tracked-user conversion rates and can exceed 100%.</p>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 rounded border border-[#d9d0c4] bg-white p-4">
               <input value={analyticsVendorFilter} onChange={event => setAnalyticsVendorFilter(event.target.value)} placeholder="Vendor ID" inputMode="numeric" className="text-xs border border-[#d9d0c4] rounded px-2 py-2 bg-[#faf6f0]" />
@@ -319,7 +379,7 @@ export default function AdminDashboard() {
               <div className="portal-metric"><strong>{adminAnalytics?.listingViews || 0}</strong><span>Listing views</span></div>
               <div className="portal-metric"><strong>{adminAnalytics?.contactReveals || 0}</strong><span>Contact reveals</span></div>
               <div className="portal-metric"><strong>{adminAnalytics?.inquiries || 0}</strong><span>Inquiries</span></div>
-              <div className="portal-metric"><strong>{adminAnalytics?.replies || 0}</strong><span>Vendor replies</span></div>
+              <div className="portal-metric"><strong>{adminAnalytics?.replies || 0}</strong><span>Responded inquiries</span></div>
               <div className="portal-metric"><strong>{adminAnalytics?.resolutions || 0}</strong><span>Resolutions</span></div>
               <div className="portal-metric"><strong>{adminAnalytics ? `${Math.round((adminAnalytics.resolutionRate || 0) * 100)}%` : "0%"}</strong><span>Resolution rate</span></div>
             </div>
@@ -374,9 +434,10 @@ export default function AdminDashboard() {
 
         {activeTab === "vendors" && (
           <section className="space-y-6">
+            {decideMutation.error && <p role="alert" className="form-error">{decideMutation.error.message}</p>}
             {isLoading ? (
               <div className="text-center py-12 font-serif text-[#68635c]">
-                Loading pending applications...
+                Loading vendor accounts...
               </div>
             ) : (pending?.length || 0) === 0 ? (
               <div className="bg-white border border-[#d9d0c4] p-12 rounded text-center">
@@ -384,7 +445,7 @@ export default function AdminDashboard() {
                   Queue is clear
                 </h3>
                 <p className="text-[#68635c] font-serif">
-                  No vendor applications are currently waiting for approval.
+                  No vendors have started onboarding.
                 </p>
               </div>
             ) : (
@@ -395,7 +456,7 @@ export default function AdminDashboard() {
                 >
                   <div>
                     <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-800 px-2 py-0.5 rounded mb-2 inline-block">
-                      Pending verification
+                      {vendor.approvalStatus === "approved" ? "Active" : vendor.approvalStatus}
                     </span>
                     <h3 className="font-serif font-bold text-2xl text-[#0a0a0a]">
                       {vendor.businessName}
@@ -411,33 +472,36 @@ export default function AdminDashboard() {
                         Location: {vendor.location || "North America"}
                       </span>
                     </div>
+                    <details className="text-sm mt-3"><summary>Vendor details</summary>
+                      <p>Vendor ID: {vendor.id} · Account ID: {vUser.id} · Account: {vUser.status}</p>
+                      <p>Identity: {vendor.identityStatus} · Residence: {vendor.residenceStatus} ({vendor.residenceCountry || "not established"})</p>
+                      <p>Service area: {vendor.serviceArea || "Not provided"}</p>
+                      <p>Business email: {vendor.contactEmail || "Not provided"} · Phone: {vendor.phone || "Not provided"}</p>
+                      <p>Re-enabling cannot bypass account or vendor onboarding requirements.</p>
+                    </details>
                   </div>
                   <div className="flex gap-3">
                     <button
                       type="button"
-                      onClick={() =>
-                        decideMutation.mutate({
-                          vendorId: vendor.id,
-                          status: "approved",
-                        })
-                      }
-                      disabled={decideMutation.isPending}
+                      onClick={() => {
+                        const reason = window.prompt("Reason for re-enabling this vendor:");
+                        if (reason) decideMutation.mutate({ vendorId: vendor.id, status: "approved", reason });
+                      }}
+                      disabled={decideMutation.isPending || vendor.approvalStatus === "approved"}
                       className="text-xs font-bold uppercase tracking-wider text-white bg-green-700 px-5 py-2.5 rounded disabled:opacity-50"
                     >
-                      Approve vendor
+                      Re-enable vendor
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        decideMutation.mutate({
-                          vendorId: vendor.id,
-                          status: "rejected",
-                        })
-                      }
+                      onClick={() => {
+                        const reason = window.prompt("Reason for suspending this vendor:");
+                        if (reason) decideMutation.mutate({ vendorId: vendor.id, status: "suspended", reason });
+                      }}
                       disabled={decideMutation.isPending}
                       className="text-xs font-bold uppercase tracking-wider text-[#68635c] border border-[#d9d0c4] px-4 py-2.5 rounded disabled:opacity-50"
                     >
-                      Reject
+                      Suspend
                     </button>
                   </div>
                 </div>
@@ -492,6 +556,7 @@ export default function AdminDashboard() {
                     className="w-full text-xs border border-[#d9d0c4] rounded px-2.5 py-1.5 bg-[#faf6f0]"
                   >
                     <option value="all">All providers</option>
+                    <option value="didit">Didit</option>
                     <option value="veriff">Veriff</option>
                     <option value="sumsub">Sumsub</option>
                     <option value="manual">Manual Review</option>
@@ -500,12 +565,18 @@ export default function AdminDashboard() {
               </div>
             </div>
 
+            <div className="bg-white border border-[#d9d0c4] rounded p-4 text-xs space-y-2">
+              <strong>Evidence retention: physical deletion disabled</strong>
+              <p>{retentionStatus?.reason || "Retention periods and legal-hold rules await approval. Expired download access does not delete stored evidence."}</p>
+              <p>Expired evidence inventory (first 100): {retentionStatus?.expired.length ?? "Loading"}. Legal holds remain audited and do not restore expired download access.</p>
+              {(retentionError || evidenceHoldMutation.error) && <p role="alert" className="form-error">{retentionError?.message || evidenceHoldMutation.error?.message}</p>}
+            </div>
             {(verificationSessions?.length || 0) === 0 ? (
               <div className="bg-white border border-[#d9d0c4] p-10 rounded text-center text-[#68635c] font-serif">
                 No vendor verification sessions recorded yet.
               </div>
             ) : (
-              verificationSessions?.map(({ session, vendor, applicant }) => (
+              verificationSessions?.map(({ session, vendor, applicant, evidence, decisions }) => (
                 <div
                   key={session.id}
                   className="bg-white border border-[#d9d0c4] p-6 rounded space-y-4"
@@ -526,42 +597,82 @@ export default function AdminDashboard() {
                       </p>
                     </div>
                     <div className="flex gap-2">
+                    {(session.sessionType === "combined_na_vendor" ? ["identity", "residence"] as const :
+                      session.sessionType === "identity_document" ? ["identity"] as const :
+                      session.sessionType === "proof_of_residence" ? ["residence"] as const : []).map(checkType => (
+                    <div key={checkType} className="space-y-2">
+                      <p className="text-xs font-bold capitalize">{checkType}: {decisions.find(decision => decision.checkType === checkType)?.outcome || "Undecided"}</p>
                       <button
                         type="button"
                         onClick={() => {
-                          const notes = window.prompt("Approval notes (optional):") || undefined;
+                          const notes = window.prompt("Record what each requested check and its documents establish:");
+                          if (!notes?.trim()) return;
                           reviewVerificationMutation.mutate({
                             sessionId: session.id,
                             action: "approve",
+                            checkType,
                             reviewerNotes: notes,
-                            countryCode: (session.countryCode as any) || "US",
+                            countryCode: session.countryCode === "US" || session.countryCode === "CA" || session.countryCode === "MX" ? session.countryCode : undefined,
                           });
                         }}
-                        disabled={reviewVerificationMutation.isPending || session.status === "approved"}
+                        disabled={reviewVerificationMutation.isPending || session.provider !== "manual" || decisions.some(decision => decision.checkType === checkType) ||
+                          !["created", "submitted", "in_review"].includes(session.status) || !session.expiresAt || new Date(session.expiresAt) <= new Date()}
                         className="text-xs font-bold uppercase tracking-wider text-white bg-green-700 px-4 py-2 rounded disabled:opacity-50"
                       >
-                        Approve Verified
+                        Approve check
                       </button>
                       <button
                         type="button"
                         onClick={() => {
-                          const reason = window.prompt("Reason for declining:") || "Documentation insufficient";
+                          const reason = window.prompt("Reason for declining (shown to the vendor):");
+                          if (!reason?.trim()) return;
                           reviewVerificationMutation.mutate({
                             sessionId: session.id,
                             action: "decline",
+                            checkType,
                             declinedReason: reason,
                           });
                         }}
-                        disabled={reviewVerificationMutation.isPending || session.status === "declined"}
+                        disabled={reviewVerificationMutation.isPending || session.provider !== "manual" || decisions.some(decision => decision.checkType === checkType) ||
+                          !["created", "submitted", "in_review"].includes(session.status) || !session.expiresAt || new Date(session.expiresAt) <= new Date()}
                         className="text-xs font-bold uppercase tracking-wider text-red-700 border border-red-200 px-4 py-2 rounded disabled:opacity-50"
                       >
                         Decline
                       </button>
                     </div>
+                    ))}
+                    </div>
+                    {session.provider !== "manual" && <p className="text-xs">Hosted results are authoritative through signed provider callbacks. Manual approval is unavailable.</p>}
                   </div>
                   {session.reviewerNotes && (
                     <div className="p-3 bg-[#faf6f0] rounded text-xs text-[#68635c] font-serif">
                       <strong>Reviewer note:</strong> {session.reviewerNotes}
+                    </div>
+                  )}
+                  {evidence.length > 0 && (
+                    <div className="border-t border-[#eee8df] pt-3 space-y-2">
+                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-[#68635c]">
+                        Private supporting documents
+                      </h4>
+                      {evidence.map(item => (
+                        <div key={item.id} className="space-y-1">
+                        {item.signedUrl ? <a
+                          href={item.signedUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block text-xs text-[#d71466] underline"
+                        >
+                          {item.evidenceType.replace(/_/g, " ")} — {item.summary || "Open document"}
+                        </a> : <p className="text-xs text-[#68635c]">
+                          {item.evidenceType.replace(/_/g, " ")} — evidence retention expired; download unavailable.
+                        </p>}
+                        <p className="text-xs">{item.legalHoldAt ? `Legal hold: ${item.legalHoldReason}` : "No legal hold"}</p>
+                        <button className="text-xs underline" disabled={evidenceHoldMutation.isPending} onClick={() => {
+                          const reason = window.prompt(item.legalHoldAt ? "Reason for releasing legal hold:" : "Reason for legal hold:");
+                          if (reason?.trim()) evidenceHoldMutation.mutate({ evidenceId: item.id, held: !item.legalHoldAt, reason });
+                        }}>{item.legalHoldAt ? "Release legal hold" : "Set legal hold"}</button>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -574,6 +685,8 @@ export default function AdminDashboard() {
           <section className="bg-white border border-[#d9d0c4] rounded overflow-hidden">
             <div className="p-5 border-b border-[#eee8df]">
               <h2 className="font-serif font-bold text-2xl">User accounts</h2>
+              {resetAccountMutation.error && <p role="alert" className="form-error">{resetAccountMutation.error.message}</p>}
+              {resetAccountMutation.data && <p role="status">{resetAccountMutation.data.message}</p>}
             </div>
             <div className="divide-y divide-[#eee8df]">
               {users?.map(account => (
@@ -588,7 +701,17 @@ export default function AdminDashboard() {
                     <p className="text-xs text-[#68635c]">
                       {account.email} · {account.role}
                     </p>
+                    <details className="text-sm mt-2"><summary>Account details</summary>
+                      <p>ID: {account.id} · Status: {account.status} · Intent: {account.signupIntent}</p>
+                      <p>Email verified: {account.emailVerifiedAt ? new Date(account.emailVerifiedAt).toLocaleString() : "No"}</p>
+                      <p>Phone verified: {account.phoneVerifiedAt ? new Date(account.phoneVerifiedAt).toLocaleString() : "No"}</p>
+                      <p>Created: {new Date(account.createdAt).toLocaleString()} · Last sign-in: {new Date(account.lastSignedIn).toLocaleString()}</p>
+                    </details>
                   </div>
+                  <button type="button" className="text-xs underline" disabled={resetAccountMutation.isPending || account.status !== "active"}
+                    onClick={() => { if (window.confirm(`Send a password recovery link to ${account.email}?`)) resetAccountMutation.mutate({ userId: account.id }); }}>
+                    Send recovery link
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -601,7 +724,7 @@ export default function AdminDashboard() {
                         });
                       }
                     }}
-                    disabled={escalateAccountMutation.isPending}
+                    disabled={escalateAccountMutation.isPending || account.id === user.id}
                     className={`text-xs font-bold uppercase tracking-wider px-3 py-2 rounded ${account.status === "active" ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}
                   >
                     {account.status === "active" ? "Suspend" : "Reactivate"}
@@ -640,12 +763,18 @@ export default function AdminDashboard() {
                     {vendor.businessName} · {category.name} · {listing.status}
                     {quality?.reasons?.length ? ` · Note: ${quality.reasons.join(", ")}` : ""}
                   </p>
+                  <a className="text-sm underline mr-4" href={`/listings/${listing.slug}?preview=1`} target="_blank" rel="noreferrer">Preview</a>
+                  <button className="text-sm underline" onClick={() => setEditingListingId(listing.id)}>Edit metadata</button>
                 </div>
                 <select
+                  aria-label={`Status for ${listing.title}`}
                   value={listing.status}
-                  onChange={event =>
+                  onChange={event => {
+                    const reason = window.prompt("Reason for changing listing status:");
+                    if (!reason?.trim()) return;
                     updateListingMutation.mutate({
                       listingId: listing.id,
+                      reason: reason.trim(),
                       status: event.target.value as
                         | "draft"
                         | "pending"
@@ -654,8 +783,8 @@ export default function AdminDashboard() {
                         | "published"
                         | "hidden"
                         | "archived",
-                    })
-                  }
+                    });
+                  }}
                   className="text-xs border border-[#d9d0c4] rounded px-2 py-2 bg-[#faf6f0]"
                 >
                   <option value="draft">Draft</option>
@@ -670,6 +799,10 @@ export default function AdminDashboard() {
             ))}
           </section>
         )}
+        {editingListingId && listings?.find(item => item.listing.id === editingListingId) && <AdminListingEditor
+          key={editingListingId}
+          listing={listings.find(item => item.listing.id === editingListingId)!.listing}
+          categories={categories ?? []} onClose={() => setEditingListingId(undefined)} />}
 
         {activeTab === "reviews" && (
           <section className="space-y-4">
@@ -873,7 +1006,7 @@ export default function AdminDashboard() {
                           type="button"
                           onClick={() => {
                             const resolutionNote = window.prompt(`Resolution note for ${status} report:`) || undefined;
-                            const suspendConversation = status === "actioned" && window.confirm("Archive this conversation for both participants?");
+                            const suspendConversation = status === "actioned" && window.confirm("Restrict this conversation for both participants? Only a moderator can restore it.");
                             const disputeValue = window.prompt("Optional existing dispute ID to link:");
                             updateConversationReportMutation.mutate({
                               reportId: report.id,
@@ -891,11 +1024,20 @@ export default function AdminDashboard() {
                       ))}
                     </div>
                   )}
+                  {inquiry.moderatorSuspendedAt && <div className="border border-amber-300 bg-amber-50 p-3 text-sm">
+                    <p>Conversation restricted by a moderator. Participant archive/unarchive cannot remove this restriction.</p>
+                    <button type="button" className="underline" disabled={updateConversationReportMutation.isPending}
+                      onClick={() => {
+                        const resolutionNote = window.prompt("Reason for restoring this conversation:");
+                        if (!resolutionNote?.trim()) return;
+                        updateConversationReportMutation.mutate({ reportId: report.id, status: report.status === "open" ? "reviewed" : report.status, resumeConversation: true, resolutionNote: resolutionNote.trim() });
+                      }}>Restore conversation access</button>
+                  </div>}
                 </div>
               ))
             )}
             {selectedReportInquiryId !== null && (
-              <div className="bg-[#0a0a0a] text-[#f0e8dc] border border-[#0a0a0a] p-5 rounded space-y-3">
+              <div id={`inquiry-${selectedReportInquiryId}`} tabIndex={-1} className="bg-[#0a0a0a] text-[#f0e8dc] border border-[#0a0a0a] p-5 rounded space-y-3">
                 <div className="flex justify-between items-center gap-4">
                   <h3 className="font-serif font-bold text-2xl">Message moderation</h3>
                   <button type="button" onClick={() => setSelectedReportInquiryId(null)} className="text-xs uppercase tracking-wider text-[#f0e8dc] hover:text-[#fe8129]">Close</button>
@@ -926,7 +1068,7 @@ export default function AdminDashboard() {
           <section className="space-y-5">
             <div className="bg-white border border-[#d9d0c4] p-5 rounded">
               <h2 className="font-serif font-bold text-2xl mb-4">
-                Add category
+                {editingCategoryId ? "Edit category" : "Add category"}
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <input
@@ -947,16 +1089,25 @@ export default function AdminDashboard() {
                     saveCategoryMutation.mutate({
                       name: newCategoryName,
                       slug: newCategorySlug,
-                      sortOrder: (categories?.length || 0) + 1,
-                      isActive: true,
+                      id: editingCategoryId,
+                      sortOrder: categoryOrder,
+                      isActive: categories?.find(category => category.id === editingCategoryId)?.isActive ?? true,
                     })
                   }
                   disabled={!newCategoryName || !newCategorySlug}
                   className="text-xs font-bold uppercase tracking-wider text-white brand-gradient rounded"
                 >
-                  Create category
+                  {editingCategoryId ? "Save category" : "Create category"}
                 </button>
               </div>
+              <label className="block mt-3">Order <input type="number" min={0} max={10000} value={categoryOrder} onChange={event => setCategoryOrder(Number(event.target.value))} /></label>
+              {editingCategoryId && <button onClick={() => { setEditingCategoryId(undefined); setNewCategoryName(""); setNewCategorySlug(""); }}>Cancel editing</button>}
+              <label className="block mt-3">Merge target (for referenced categories)
+                <select value={mergeTargetId} onChange={event => setMergeTargetId(event.target.value)}>
+                  <option value="">No merge — delete only if unused</option>
+                  {categories?.filter(category => category.isActive).map(category => <option key={category.id} value={category.id}>{category.name}</option>)}
+                </select>
+              </label>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {categories?.map(category => (
@@ -969,6 +1120,13 @@ export default function AdminDashboard() {
                     <p className="text-xs text-[#68635c]">
                       /{category.slug} · order {category.sortOrder}
                     </p>
+                    <button className="text-sm underline mr-3" onClick={() => {
+                      setEditingCategoryId(category.id); setNewCategoryName(category.name); setNewCategorySlug(category.slug); setCategoryOrder(category.sortOrder);
+                    }}>Edit name / slug / order</button>
+                    <button className="text-sm underline text-red-700" disabled={removeCategory.isPending} onClick={() => {
+                      const reason = window.prompt(mergeTargetId ? `Merge ${category.name} into the selected target and remove its old URL? Enter reason:` : `Delete unused category ${category.name}? Enter reason:`);
+                      if (reason?.trim()) removeCategory.mutate({ categoryId: category.id, mergeIntoId: mergeTargetId ? Number(mergeTargetId) : undefined, reason });
+                    }}>{mergeTargetId ? "Merge into target" : "Delete if unused"}</button>
                   </div>
                   <button
                     type="button"
@@ -1073,7 +1231,20 @@ export default function AdminDashboard() {
                       <p className="text-xs text-[#68635c]">{delivery.channel} · {delivery.provider || "internal"} · {delivery.status}</p>
                       {delivery.failureReason && <p className="mt-1 text-xs text-red-700">{delivery.failureReason}</p>}
                     </div>
-                    {(delivery.status === "failed" || delivery.status === "bounced" || delivery.status === "complained") && (
+                    {delivery.failureCode === "send_outcome_unknown" ? (
+                      <div className="space-y-2 text-xs">
+                        <p>Unknown provider outcome. Check SendPulse before authorizing any resend.</p>
+                        <div className="flex gap-3">
+                          {(["sent", "not_sent"] as const).map(outcome => <button key={outcome} className="underline" disabled={retryDeliveryMutation.isPending} onClick={() => {
+                            const providerMessageId = outcome === "sent" ? window.prompt("Confirmed SendPulse message ID:") : undefined;
+                            if (outcome === "sent" && !providerMessageId?.trim()) return;
+                            const notes = window.prompt(outcome === "sent" ? "Record how you confirmed provider acceptance:" : "Confirm SendPulse did NOT accept this message. Record your checks before authorizing resend:");
+                            if (!notes?.trim()) return;
+                            retryDeliveryMutation.mutate({ deliveryId: delivery.id, reconciliation: { outcome, notes, ...(providerMessageId ? { providerMessageId } : {}) } });
+                          }}>{outcome === "sent" ? "Confirm sent (do not resend)" : "Confirm not sent and retry"}</button>)}
+                        </div>
+                      </div>
+                    ) : delivery.status === "failed" && delivery.failureCode !== "send_in_progress" && (
                       <div className="flex gap-2">
                         <button type="button" onClick={() => retryDeliveryMutation.mutate({ deliveryId: delivery.id })} disabled={retryDeliveryMutation.isPending} className="rounded border border-[#d71466] px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-[#d71466] disabled:opacity-50">Retry delivery</button>
                         {delivery.outboxId && (
@@ -1105,6 +1276,8 @@ export default function AdminDashboard() {
           </section>
         )}
 
+        {activeTab === "sms-countries" && <PhoneCountrySettings />}
+        {activeTab === "email-policy" && <EmailPolicySettings />}
         {activeTab === "flags" && (
           <section className="space-y-3">
             {flags?.map(flag => (
@@ -1132,8 +1305,6 @@ export default function AdminDashboard() {
             ))}
           </section>
         )}
-      </main>
-      <SiteFooter />
-    </div>
+    </AdminShell>
   );
 }

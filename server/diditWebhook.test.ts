@@ -6,7 +6,7 @@ import {
   sortDiditKeys,
   verifyDiditSignature,
 } from "./diditWebhook";
-import { DiditVerificationAdapter } from "./vendorVerificationAdapters";
+import { DiditVerificationAdapter, diditIdCountry } from "./vendorVerificationAdapters";
 
 describe("Didit KYC adapter & webhook integration", () => {
   const secret = "test-didit-webhook-secret-1234567890";
@@ -88,6 +88,11 @@ describe("Didit KYC adapter & webhook integration", () => {
     expect(mapDiditStatus("Kyc Expired")).toBe("expired");
     expect(mapDiditStatus("Abandoned")).toBe("abandoned");
     expect(mapDiditStatus("UnknownStatus")).toBeNull();
+  });
+
+  it("sends Didit the ISO alpha-3 identity country it requires", () => {
+    expect(["US", "CA", "MX", "NG", "gb"].map(diditIdCountry)).toEqual(["USA", "CAN", "MEX", "NGA", "GBR"]);
+    expect(() => diditIdCountry("ZZ")).toThrow("alpha-3");
   });
 
   it("handles unconfigured adapter state safely without throwing in inspection", () => {

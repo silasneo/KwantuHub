@@ -38,7 +38,7 @@ ALTER TABLE `vendorProfiles` ADD `residenceStatus` enum('unverified','pending','
 ALTER TABLE `vendorProfiles` ADD `residenceCountry` varchar(2);--> statement-breakpoint
 ALTER TABLE `vendorProfiles` ADD `residenceVerifiedAt` timestamp;--> statement-breakpoint
 ALTER TABLE `vendorProfiles` ADD `verificationBadgeSummary` json;--> statement-breakpoint
-ALTER TABLE `vendorVerificationEvidence` ADD CONSTRAINT `vendorVerificationEvidence_sessionId_vendorVerificationSessions_id_fk` FOREIGN KEY (`sessionId`) REFERENCES `vendorVerificationSessions`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `vendorVerificationEvidence` ADD CONSTRAINT `vendor_verification_evidence_session_fk` FOREIGN KEY (`sessionId`) REFERENCES `vendorVerificationSessions`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `vendorVerificationSessions` ADD CONSTRAINT `vendorVerificationSessions_vendorId_vendorProfiles_id_fk` FOREIGN KEY (`vendorId`) REFERENCES `vendorProfiles`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `vendorVerificationSessions` ADD CONSTRAINT `vendorVerificationSessions_userId_users_id_fk` FOREIGN KEY (`userId`) REFERENCES `users`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `vendorVerificationSessions` ADD CONSTRAINT `vendorVerificationSessions_reviewedBy_users_id_fk` FOREIGN KEY (`reviewedBy`) REFERENCES `users`(`id`) ON DELETE set null ON UPDATE no action;--> statement-breakpoint

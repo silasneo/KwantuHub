@@ -1,7 +1,13 @@
 import { useState } from "react";
+import { mediaUrl } from "@/lib/storage";
 
 interface ListingImageCarouselProps {
-  media: Array<{ id?: number; url: string; altText?: string | null }>;
+  media: Array<{
+    id?: number;
+    url: string;
+    storageKey?: string | null;
+    altText?: string | null;
+  }>;
   title: string;
   listingType?: string;
 }
@@ -37,7 +43,7 @@ export function ListingImageCarousel({
       {/* Main Display Stage */}
       <div className="relative h-96 sm:h-[480px] bg-[#0a0a0a] rounded-lg overflow-hidden flex items-center justify-center group">
         <img
-          src={currentMedia.url}
+          src={mediaUrl(currentMedia.storageKey || currentMedia.url)}
           alt={currentMedia.altText || `${title} - Image ${currentIndex + 1}`}
           className="w-full h-full object-cover transition-opacity duration-300"
         />
@@ -102,7 +108,7 @@ export function ListingImageCarousel({
               }`}
             >
               <img
-                src={item.url}
+                src={mediaUrl(item.storageKey || item.url)}
                 alt={`Thumbnail ${idx + 1}`}
                 className="w-full h-full object-cover"
               />

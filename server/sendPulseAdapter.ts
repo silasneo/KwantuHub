@@ -23,6 +23,22 @@ export type SendPulseConfig = {
 
 type SendPulseToken = { value: string; expiresAt: number };
 
+/**
+ * "rejected": SendPulse answered and did not accept the message, so a retry cannot duplicate it.
+ * "ambiguous": the request may have been accepted (network failure, timeout, gateway error or an
+ * unreadable success body). Callers must not resend automatically; reconcile manually instead.
+ */
+export type SendPulseSendOutcome = "rejected" | "ambiguous";
+
+const AMBIGUOUS_HTTP_STATUSES = new Set([500, 502, 504]);
+
+export class SendPulseSendError extends Error {
+  constructor(message: string, readonly outcome: SendPulseSendOutcome, readonly httpStatus?: number) {
+    super(message);
+    this.name = "SendPulseSendError";
+  }
+}
+
 let cachedToken: SendPulseToken | null = null;
 
 export function getSendPulseConfig(env: NodeJS.ProcessEnv = process.env): SendPulseConfig {
@@ -146,23 +162,64 @@ export class SendPulseTransactionalEmailAdapter {
   async send(message: TransactionalEmailMessage) {
     if (!this.isConfigured()) throw new Error("SendPulse is not configured");
     const token = await getAccessToken(this.config);
-    const response = await fetchWithTimeout(`${this.config.apiBaseUrl}/smtp/emails`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        "x-idempotency-key": message.idempotencyKey,
-      },
-      body: JSON.stringify(buildSendPulseEmailPayload(message, this.config)),
-    });
-    if (!response.ok) {
-      throw new Error(`SendPulse email request failed (${response.status}): ${await readProviderError(response)}`);
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(`${this.config.apiBaseUrl}/smtp/emails`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-idempotency-key": message.idempotencyKey,
+        },
+        body: JSON.stringify(buildSendPulseEmailPayload(message, this.config)),
+      });
+    } catch (error) {
+      // The request may have reached SendPulse before the connection failed or timed out.
+      throw new SendPulseSendError(
+        `SendPulse email request outcome unknown: ${error instanceof Error ? error.name : "UnknownError"}`,
+        "ambiguous"
+      );
     }
-    const body = (await response.json()) as { id?: string | number; result?: boolean; message_id?: string | number };
+    if (!response.ok) {
+      throw new SendPulseSendError(
+        `SendPulse email request failed (${response.status}): ${await readProviderError(response)}`,
+        AMBIGUOUS_HTTP_STATUSES.has(response.status) ? "ambiguous" : "rejected",
+        response.status
+      );
+    }
+    let body: { id?: string | number; result?: boolean; message_id?: string | number };
+    try {
+      body = (await response.json()) as typeof body;
+    } catch {
+      throw new SendPulseSendError("SendPulse accepted the request but returned an unreadable response.", "ambiguous", response.status);
+    }
+    // An explicit non-acceptance is a definite rejection; callers retry or surface it.
+    if (body.result !== true) return { providerMessageId: null, accepted: false as boolean };
+    const providerMessageId = body.id ?? body.message_id;
     return {
-      providerMessageId: String(body.id ?? body.message_id ?? message.idempotencyKey),
-      accepted: body.result !== false,
+      // Without a provider ID, webhook callbacks cannot be correlated to this delivery.
+      providerMessageId: providerMessageId == null ? null : String(providerMessageId),
+      accepted: true as boolean,
     };
+  }
+
+  async sendSms(phone: string, code: string) {
+    if (!this.config.clientId || !this.config.clientSecret || !process.env.SENDPULSE_SMS_SENDER) {
+      throw new Error("SendPulse SMS requires client credentials and SENDPULSE_SMS_SENDER.");
+    }
+    const token = await getAccessToken(this.config);
+    const response = await fetchWithTimeout(`${this.config.apiBaseUrl}/sms/send`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        sender: process.env.SENDPULSE_SMS_SENDER,
+        phones: [phone.replace(/^\+/, "")],
+        body: `Your KwantuHub verification code is ${code}. Valid for 10 minutes.`,
+      }),
+    });
+    if (!response.ok) throw new Error(`SendPulse SMS request failed (${response.status}).`);
+    const result = await response.json() as { result?: boolean };
+    if (result.result !== true) throw new Error("SendPulse did not accept the SMS.");
   }
 }
 

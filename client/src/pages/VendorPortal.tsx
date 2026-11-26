@@ -7,7 +7,13 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 import { NotificationPreferences } from "@/components/NotificationPreferences";
 import { ContactVerification } from "@/components/ContactVerification";
 import { VendorVerificationCenter } from "@/components/VendorVerificationCenter";
-import TurnstileField from "@/components/TurnstileField";
+import TurnstileField, { turnstileConfigured } from "@/components/TurnstileField";
+import { VendorImageUpload } from "@/components/VendorImageUpload";
+import { useDashboardTab } from "@/hooks/useDashboardTab";
+import { PortalRequestStatus } from "@/components/PortalRequestStatus";
+import { CollectionPager } from "@/components/CollectionPager";
+import { ConversationMessages } from "@/components/ConversationMessages";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 function formatRelativeTime(value: Date | string | null) {
   if (!value) return "No messages yet";
@@ -27,9 +33,14 @@ type ContactField = {
 
 export default function VendorPortal() {
   const { user, isAuthenticated } = useAuth();
-  const [activeTab, setActiveTab] = useState<
-    "listings" | "inquiries" | "analytics" | "reviews" | "profile"
-  >("listings");
+  const { activeTab, setActiveTab, inquiryId } = useDashboardTab(["listings", "inquiries", "analytics", "reviews", "notifications", "profile"] as const, "listings");
+  const { data: notificationCount } = trpc.notifications.unreadCount.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 30_000 });
+  const [businessName, setBusinessName] = useState("");
+  const [businessDescription, setBusinessDescription] = useState("");
+  const [businessLocation, setBusinessLocation] = useState("");
+  const [headline, setHeadline] = useState("");
+  const [publishChallengeKey, setPublishChallengeKey] = useState(0);
+  const [archiveTarget, setArchiveTarget] = useState<{ id: number; title: string } | null>(null);
 
   // New listing form state
   const [newTitle, setNewTitle] = useState("");
@@ -39,6 +50,13 @@ export default function VendorPortal() {
   const [newPrice, setNewPrice] = useState("");
   const [newLocation, setNewLocation] = useState("");
   const [newRemote, setNewRemote] = useState(false);
+  const [editingListingId, setEditingListingId] = useState<number>();
+  const [listingImages, setListingImages] = useState<string[]>([]);
+  const [listingStatus, setListingStatus] = useState<"draft" | "published" | "hidden" | "archived">("published");
+  const [imageBusy, setImageBusy] = useState(false);
+  const [storeImageBusy, setStoreImageBusy] = useState(false);
+  const [logoImages, setLogoImages] = useState<string[]>([]);
+  const [coverImages, setCoverImages] = useState<string[]>([]);
   const [replyText, setReplyText] = useState<Record<number, string>>({});
   const [leadNotes, setLeadNotes] = useState<Record<number, string>>({});
   const [followUpDates, setFollowUpDates] = useState<Record<number, string>>({});
@@ -55,35 +73,45 @@ export default function VendorPortal() {
   const [analyticsTo, setAnalyticsTo] = useState("");
   const [standardsAcknowledged, setStandardsAcknowledged] = useState(false);
   const [publishTurnstileToken, setPublishTurnstileToken] = useState<string>();
+  const [listingPage, setListingPage] = useState(1);
+  const [inquiryPage, setInquiryPage] = useState(1);
+  const [reviewPage, setReviewPage] = useState(1);
 
   const utils = trpc.useUtils();
-  const { data: profile } = trpc.vendor.getProfile.useQuery(undefined, {
+  const { data: profile, error: profileError, isLoading: loadingProfile } = trpc.vendor.getProfile.useQuery(undefined, {
     enabled: isAuthenticated,
   });
-  const { data: listings } = trpc.vendor.listings.useQuery(undefined, {
-    enabled: isAuthenticated,
+  const { data: listingData, error: listingsError, isLoading: loadingListings } = trpc.vendor.listings.useQuery({ page: listingPage }, {
+    enabled: isAuthenticated && activeTab === "listings",
   });
-  const { data: inquiries } = trpc.vendor.inquiries.useQuery(undefined, {
-    enabled: isAuthenticated,
+  const { data: inquiryData, error: inquiriesError, isLoading: loadingInquiries } = trpc.vendor.inquiries.useQuery({ page: inquiryId ? 1 : inquiryPage, inquiryId: inquiryId ?? undefined }, {
+    enabled: isAuthenticated && activeTab === "inquiries",
   });
   const analyticsInput = useMemo(() => ({
     categoryId: analyticsCategory ? Number(analyticsCategory) : undefined,
     from: analyticsFrom || undefined,
     to: analyticsTo || undefined,
   }), [analyticsCategory, analyticsFrom, analyticsTo]);
-  const { data: analytics } = trpc.vendor.analytics.useQuery(analyticsInput, {
-    enabled: isAuthenticated,
+  const { data: analytics, error: analyticsError } = trpc.vendor.analytics.useQuery(analyticsInput, {
+    enabled: isAuthenticated && activeTab === "analytics",
   });
-  const { data: reviews } = trpc.vendor.reviews.useQuery(undefined, {
-    enabled: isAuthenticated,
+  const { data: reviewData, error: reviewsError } = trpc.vendor.reviews.useQuery({ page: reviewPage }, {
+    enabled: isAuthenticated && activeTab === "reviews",
   });
-  const { data: leadFunnelData } = trpc.vendor.leadFunnel.useQuery(undefined, {
+  const { data: leadFunnelData, error: funnelError } = trpc.vendor.leadFunnel.useQuery(analyticsInput, {
     enabled: isAuthenticated && activeTab === "inquiries",
   });
   const { data: categories } = trpc.categories.list.useQuery();
+  const listings = listingData?.items;
+  const inquiries = inquiryData?.items;
+  const reviews = reviewData?.items;
 
   useEffect(() => {
     if (!profile) return;
+    setBusinessName(profile.businessName || "");
+    setBusinessDescription(profile.description || "");
+    setBusinessLocation(profile.location || "");
+    setHeadline(profile.storefront?.headline || "");
     setPhone(profile.phone || "");
     setWhatsapp(profile.whatsapp || "");
     setImessage(profile.imessage || "");
@@ -93,25 +121,38 @@ export default function VendorPortal() {
     setServiceArea(profile.serviceArea || "");
     setRemoteAvailable(Boolean(profile.remoteAvailable));
     setStandardsAcknowledged(Boolean(profile.standardsAcknowledgedAt));
+    setLogoImages(profile.storefront?.logoUrl ? [profile.storefront.logoUrl] : []);
+    setCoverImages(profile.storefront?.coverUrl ? [profile.storefront.coverUrl] : []);
   }, [profile]);
 
   const saveListingMutation = trpc.vendor.saveListing.useMutation({
+    onSettled: () => { setPublishTurnstileToken(undefined); setPublishChallengeKey(key => key + 1); },
     onSuccess: () => {
       setNewTitle("");
       setNewDesc("");
       setNewPrice("");
+      setListingImages([]);
+      setEditingListingId(undefined);
+      setNewCategory("");
+      setNewLocation("");
+      setNewRemote(false);
+      setListingStatus("published");
       utils.vendor.listings.invalidate();
     },
+  });
+  const archiveListingMutation = trpc.vendor.archiveListing.useMutation({
+    onSuccess: () => { setArchiveTarget(null); utils.vendor.listings.invalidate(); },
   });
 
   const replyMutation = trpc.vendor.replyInquiry.useMutation({
     onSuccess: (_, vars) => {
       setReplyText(prev => ({ ...prev, [vars.inquiryId]: "" }));
       utils.vendor.inquiries.invalidate();
+      utils.buyer.messages.invalidate();
     },
   });
   const markInquiryRead = trpc.vendor.markInquiryRead.useMutation({
-    onSuccess: () => utils.vendor.inquiries.invalidate(),
+    onSuccess: () => { utils.vendor.inquiries.invalidate(); utils.buyer.messages.invalidate(); },
   });
   const closeInquiryMutation = trpc.vendor.closeInquiry.useMutation({
     onSuccess: () => utils.vendor.inquiries.invalidate(),
@@ -133,6 +174,10 @@ export default function VendorPortal() {
   const saveProfileMutation = trpc.vendor.saveProfile.useMutation({
     onSuccess: () => utils.vendor.getProfile.invalidate(),
   });
+  const saveStoreMedia = trpc.vendor.saveStorefrontMedia.useMutation({
+    onSuccess: () => utils.vendor.getProfile.invalidate(),
+  });
+  const cleanupImages = trpc.vendor.cleanupImages.useMutation();
 
   if (!isAuthenticated) {
     return (
@@ -220,18 +265,14 @@ export default function VendorPortal() {
             </p>
           </div>
 
-          {profile?.storefront && isApproved && (
+          {profile?.storefront && (
             <Link
-              href={`/storefronts/${profile.storefront.slug}`}
+              href={`/storefronts/${profile.storefront.slug}?preview=1`}
               className="text-xs font-bold uppercase tracking-wider text-[#d71466] border border-[#d71466] px-4 py-2 rounded hover:bg-[#d71466] hover:text-white transition"
             >
-              View Public Storefront →
+              Preview Storefront →
             </Link>
           )}
-        </div>
-
-        <div className="mb-8 max-w-2xl">
-          <NotificationCenter mode="panel" />
         </div>
 
         {!isApproved && (
@@ -241,14 +282,14 @@ export default function VendorPortal() {
             </h4>
             <p>
               An administrator will review your vendor profile before listings
-              are published to the public marketplace. You can still prepare
-              your catalog drafts and review incoming customer inquiries.
+              are published to the public marketplace. Complete activation before
+              saving listings; publication also requires administrator approval.
             </p>
           </div>
         )}
 
         {/* Navigation Tabs */}
-        <div className="flex border-b border-[#d9d0c4] mb-8 gap-8">
+        <div className="flex border-b border-[#d9d0c4] mb-8 gap-8 overflow-x-auto whitespace-nowrap [scrollbar-width:none]">
           <button
             onClick={() => setActiveTab("listings")}
             className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
@@ -257,7 +298,7 @@ export default function VendorPortal() {
                 : "border-transparent text-[#68635c]"
             }`}
           >
-            Listings Catalog ({listings?.length || 0})
+            Listings Catalog ({listingData?.pagination.total ?? "..."})
           </button>
           <button
             onClick={() => setActiveTab("inquiries")}
@@ -267,10 +308,10 @@ export default function VendorPortal() {
                 : "border-transparent text-[#68635c]"
             }`}
           >
-            Buyer Inquiries ({inquiries?.length || 0})
+            Buyer Inquiries ({inquiryData?.pagination.total ?? "..."})
             {(inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0) || 0) > 0 && (
               <span className="ml-2 rounded-full bg-[#d71466] px-2 py-0.5 text-[10px] text-white">
-                {inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0)} new
+                {inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0)} unread on this page
               </span>
             )}
           </button>
@@ -292,7 +333,17 @@ export default function VendorPortal() {
                 : "border-transparent text-[#68635c]"
             }`}
           >
-            Reviews ({reviews?.length || 0})
+            Reviews ({reviewData?.pagination.total ?? "..."})
+          </button>
+          <button
+            onClick={() => setActiveTab("notifications")}
+            className={`shrink-0 pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
+              activeTab === "notifications"
+                ? "border-[#d71466] text-[#d71466]"
+                : "border-transparent text-[#68635c]"
+            }`}
+          >
+            Notifications ({notificationCount?.unreadCount ?? "..."})
           </button>
           <button
             onClick={() => setActiveTab("profile")}
@@ -306,13 +357,44 @@ export default function VendorPortal() {
           </button>
         </div>
 
+        <PortalRequestStatus queries={[{ error: profileError, isLoading: loadingProfile }, { error: listingsError, isLoading: loadingListings }, { error: inquiriesError, isLoading: loadingInquiries }, { error: analyticsError }, { error: reviewsError }, { error: funnelError }]}
+          mutations={[saveListingMutation, archiveListingMutation, replyMutation, markInquiryRead, closeInquiryMutation, reopenInquiryMutation, archiveInquiryMutation, unarchiveInquiryMutation, updateLeadStageMutation, reportConversationMutation, saveProfileMutation, saveStoreMedia, cleanupImages]}
+          onRetry={() => { utils.vendor.invalidate(); }}>
+          <Link href="/vendor/onboarding" className="underline block">Review vendor activation requirements</Link>
+        </PortalRequestStatus>
+        {activeTab === "inquiries" && inquiryId && <p className="mb-4"><Link href="/vendor?tab=inquiries" className="underline">Show all conversations</Link></p>}
+        {activeTab === "inquiries" && inquiryId && inquiries && !inquiries.some(inquiry => inquiry.id === inquiryId) && <p role="alert" className="form-error mb-4">The linked conversation is unavailable in this account. Choose another conversation or <Link href="/support" className="underline">contact support</Link>.</p>}
+        {activeTab === "listings" && <CollectionPager pagination={listingData?.pagination} onPage={setListingPage} label="Listings" />}
+        {activeTab === "inquiries" && <CollectionPager pagination={inquiryData?.pagination} onPage={setInquiryPage} label="Conversations" />}
+        {activeTab === "reviews" && <CollectionPager pagination={reviewData?.pagination} onPage={setReviewPage} label="Reviews" />}
+        <AlertDialog open={Boolean(archiveTarget)} onOpenChange={open => { if (!open && !archiveListingMutation.isPending) setArchiveTarget(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Archive {archiveTarget?.title}?</AlertDialogTitle>
+              <AlertDialogDescription>This removes the listing from public discovery, not your account. Existing inquiries and reviews are preserved. You can edit and republish later if eligible.</AlertDialogDescription>
+            </AlertDialogHeader>
+            {archiveListingMutation.error && <p role="alert" className="form-error">{archiveListingMutation.error.message}</p>}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={archiveListingMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction disabled={archiveListingMutation.isPending} onClick={event => {
+                event.preventDefault();
+                if (archiveTarget) archiveListingMutation.mutate({ id: archiveTarget.id });
+              }}>{archiveListingMutation.isPending ? "Archiving…" : "Confirm archive"}</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        {activeTab === "notifications" && (
+          <div className="max-w-3xl">
+            <NotificationCenter mode="panel" />
+          </div>
+        )}
         {/* Listings Tab */}
         {activeTab === "listings" && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Create Listing Form */}
             <div className="lg:col-span-1 bg-white border border-[#d9d0c4] p-6 rounded h-fit">
               <h3 className="font-serif font-bold text-2xl text-[#0a0a0a] mb-4">
-                Add Creation / Service
+                {editingListingId ? "Edit Creation / Service" : "Add Creation / Service"}
               </h3>
 
               <div className="space-y-4">
@@ -387,7 +469,18 @@ export default function VendorPortal() {
                   />
                 </div>
 
-                <TurnstileField action="publish_listing" onToken={setPublishTurnstileToken} />
+                <VendorImageUpload label="Listing gallery" value={listingImages} onChange={setListingImages} max={5} onBusy={setImageBusy} disabled={saveListingMutation.isPending} />
+                <label className="block text-xs">Listing location
+                  <input value={newLocation} onChange={event => setNewLocation(event.target.value)} maxLength={255} className="block w-full border p-2" placeholder="City or delivery location" />
+                </label>
+                <label className="flex gap-2 text-xs"><input type="checkbox" checked={newRemote} onChange={event => setNewRemote(event.target.checked)} />Remote / virtual delivery available</label>
+                <p className="text-xs">Numeric price filters recognize USD (including bare $) or explicit CAD, e.g. USD 50-100 or CAD 19.99. Other price text remains visible but is excluded from numeric filters.</p>
+                <label className="block text-xs">Listing status
+                  <select value={listingStatus} onChange={event => setListingStatus(event.target.value as typeof listingStatus)} className="block w-full border p-2">
+                    <option value="draft">Draft</option><option value="published">Published</option><option value="hidden">Hidden</option><option value="archived">Archived</option>
+                  </select>
+                </label>
+                <TurnstileField key={publishChallengeKey} action="publish_listing" onToken={setPublishTurnstileToken} />
                 {saveListingMutation.error && (
                   <p className="form-error text-xs text-red-700">
                     {saveListingMutation.error.message}
@@ -397,29 +490,40 @@ export default function VendorPortal() {
                 <button
                   onClick={() => {
                     if (!newTitle || !newDesc || !newCategory) return;
+                    if (listingStatus === "archived" && !window.confirm("Archive this listing? It will leave public discovery. Existing inquiries and reviews are preserved.")) return;
                     saveListingMutation.mutate({
+                      id: editingListingId,
                       title: newTitle,
                       description: newDesc,
                       categoryId: Number(newCategory),
                       listingType: newType,
                       priceIndication: newPrice || "Inquire",
-                      status: "published",
+                      status: listingStatus,
+                      media: listingImages,
+                      location: newLocation,
+                      remoteAvailable: newRemote,
                       turnstileToken: publishTurnstileToken,
                     });
                   }}
                   disabled={
                     saveListingMutation.isPending ||
+                    (turnstileConfigured && !publishTurnstileToken) ||
+                    imageBusy ||
                     !newTitle ||
                     !newDesc ||
                     !newCategory ||
-                    !isApproved
+                    !profile?.onboardingCompletedAt ||
+                    (listingStatus === "published" && !isApproved)
                   }
                   className="w-full text-xs font-bold uppercase tracking-wider text-white brand-gradient py-3 rounded disabled:opacity-50 cursor-pointer"
                 >
                   {saveListingMutation.isPending
-                    ? "Publishing..."
-                    : "Publish to Marketplace"}
+                    ? "Saving..."
+                    : editingListingId ? "Save listing" : "Save creation / service"}
                 </button>
+                {editingListingId && <button type="button" disabled={imageBusy || saveListingMutation.isPending} onClick={() => {
+                  setEditingListingId(undefined); setListingImages([]); setNewTitle(""); setNewDesc(""); setNewPrice(""); setNewLocation(""); setNewRemote(false); setListingStatus("published");
+                }}>Cancel editing</button>}
               </div>
             </div>
 
@@ -463,12 +567,21 @@ export default function VendorPortal() {
                       </p>
                     </div>
 
+                    <button type="button" className="text-xs underline" disabled={imageBusy || saveListingMutation.isPending} onClick={() => {
+                      setEditingListingId(item.id); setNewTitle(item.title); setNewDesc(item.description);
+                      setNewCategory(item.categoryId); setNewType(item.listingType); setNewPrice(item.priceIndication ?? "");
+                      setNewLocation(item.location ?? ""); setNewRemote(item.remoteAvailable);
+                      setListingStatus(["draft", "published", "hidden", "archived"].includes(item.status) ? item.status as typeof listingStatus : "draft");
+                      setListingImages(item.media.map(image => image.url));
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }}>Edit listing &amp; gallery</button>
                     <Link
-                      href={`/listings/${item.slug}`}
+                      href={`/listings/${item.slug}?preview=1`}
                       className="text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline"
                     >
-                      View Live →
+                      Preview →
                     </Link>
+                    {item.status !== "archived" && <button type="button" className="text-xs text-red-700 underline" disabled={archiveListingMutation.isPending} onClick={() => setArchiveTarget({ id: item.id, title: item.title })}>Archive listing</button>}
                   </div>
                 ))
               )}
@@ -527,6 +640,8 @@ export default function VendorPortal() {
               inquiries?.map(inq => (
                 <div
                   key={inq.id}
+                  id={`inquiry-${inq.id}`}
+                  tabIndex={-1}
                   className="bg-white border border-[#d9d0c4] p-6 rounded shadow-xs"
                 >
                   <div className="flex justify-between items-start mb-4 border-b border-[#eee8df] pb-3">
@@ -575,28 +690,7 @@ export default function VendorPortal() {
                       ` · First response ${Math.max(1, Math.round(inq.responseTimeSeconds / 60))}m`}
                   </p>
 
-                  <div className="space-y-3 mb-6">
-                    {inq.messages.map(m => (
-                      <div
-                        key={m.id}
-                        className={`p-3 rounded text-sm max-w-xl ${
-                          m.senderId === user?.id
-                            ? "bg-[#fff7ed] border border-[#fed7aa] ml-auto text-right"
-                            : "bg-[#faf6f0] border border-[#eee8df] mr-auto text-left"
-                        }`}
-                      >
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#888] block mb-1">
-                          {m.senderId === user?.id
-                            ? "You (Vendor)"
-                            : inq.buyer.name || "Buyer"}
-                        </span>
-                        <p className="font-serif text-[#333]">{m.body}</p>
-                        <span className="mt-1 block text-[10px] text-[#999]">
-                          {formatRelativeTime(m.createdAt)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                  <ConversationMessages inquiryId={inq.id} viewerId={user!.id} otherName={inq.buyer.name || "Buyer"} />
 
                   {inq.unreadCount > 0 && (
                     <button
@@ -609,6 +703,8 @@ export default function VendorPortal() {
                     </button>
                   )}
 
+                  {inq.moderatorSuspendedAt && <p role="status" className="p-3 border border-amber-300 bg-amber-50 text-sm">A moderator has restricted this conversation. Replies and state changes are disabled. Contact support for help.</p>}
+                  <fieldset disabled={Boolean(inq.moderatorSuspendedAt)} className="disabled:opacity-60">
                   {/* Vendor Lead Stage & Private Notes (Protected - Never Exposed to Buyers) */}
                   <div className="my-4 p-4 bg-[#faf6f0] border border-[#eee8df] rounded space-y-3">
                     <div className="flex flex-wrap justify-between items-center gap-2">
@@ -761,6 +857,7 @@ export default function VendorPortal() {
                       Unarchive conversation
                     </button>
                   )}
+                  </fieldset>
                   <button
                     type="button"
                     onClick={() => {
@@ -898,8 +995,15 @@ export default function VendorPortal() {
                 Vendor settings
               </p>
               <h2 className="font-serif text-3xl font-bold text-[#0a0a0a] mb-2">
-                Contact channels
+                Business details & contact channels
               </h2>
+              <div className="space-y-3 mb-6">
+                <label className="block text-sm">Business name<input className="block w-full border p-2" maxLength={255} value={businessName} onChange={event => setBusinessName(event.target.value)} /></label>
+                <label className="block text-sm">Headline<input className="block w-full border p-2" maxLength={255} value={headline} onChange={event => setHeadline(event.target.value)} /></label>
+                <label className="block text-sm">Business description<textarea className="block w-full border p-2" maxLength={10000} rows={4} value={businessDescription} onChange={event => setBusinessDescription(event.target.value)} /></label>
+                <label className="block text-sm">Business location<input className="block w-full border p-2" maxLength={255} value={businessLocation} onChange={event => setBusinessLocation(event.target.value)} /></label>
+                <p className="text-xs">These are public business details, not legal identity. Changes do not remove an administrator suspension.</p>
+              </div>
               <p className="font-serif text-sm text-[#68635c] mb-6">
                 Choose which channels buyers can reveal from an individual
                 listing. Leave a field blank to keep it private.
@@ -932,6 +1036,19 @@ export default function VendorPortal() {
                   <span><strong className="block text-xs uppercase tracking-wider text-[#68635c]">Remote delivery available</strong><span className="text-[11px] text-[#888]">Show a clear remote option on your public profile.</span></span>
                 </label>
               </div>
+              <section className="my-6 space-y-4 border-t pt-4">
+                <h3 className="font-bold">Storefront images</h3>
+                <VendorImageUpload label="Storefront logo" value={logoImages} onChange={setLogoImages} onBusy={setStoreImageBusy} disabled={saveStoreMedia.isPending || storeImageBusy} />
+                <VendorImageUpload label="Storefront cover" value={coverImages} onChange={setCoverImages} onBusy={setStoreImageBusy} disabled={saveStoreMedia.isPending || storeImageBusy} />
+                <button type="button" className="border rounded p-2 text-xs" disabled={saveStoreMedia.isPending || storeImageBusy}
+                  onClick={() => saveStoreMedia.mutate({ logoUrl: logoImages[0] ?? null, coverUrl: coverImages[0] ?? null })}>Save storefront images</button>
+                {saveStoreMedia.error && <p role="alert" className="text-red-700 text-xs">{saveStoreMedia.error.message}</p>}
+                {saveStoreMedia.isSuccess && <p role="status" className="text-xs">Storefront images saved.</p>}
+                <p className="text-xs">Unused uploads older than 24 hours are cleaned on your next upload, or use cleanup below. Saved or shared seed images are never removed.</p>
+                <button type="button" className="text-xs underline" disabled={cleanupImages.isPending} onClick={() => cleanupImages.mutate()}>Clean unused uploads</button>
+                {cleanupImages.error && <p role="alert" className="text-red-700 text-xs">{cleanupImages.error.message}</p>}
+                {cleanupImages.data && <p role="status" className="text-xs">Removed {cleanupImages.data.deleted} unused uploads.</p>}
+              </section>
               <label className="mt-6 flex items-start gap-3 text-sm font-serif text-[#333]">
                 <input type="checkbox" checked={standardsAcknowledged} onChange={event => setStandardsAcknowledged(event.target.checked)} className="mt-1 accent-[#d71466]" />
                 <span>I confirm that my listings, service area, availability, and contact information are accurate and that I will respond to community inquiries in good faith.</span>
@@ -940,29 +1057,35 @@ export default function VendorPortal() {
                 type="button"
                 className="mt-6 text-xs font-bold uppercase tracking-wider text-white brand-gradient px-6 py-3 rounded disabled:opacity-50"
                 disabled={
-                  saveProfileMutation.isPending || !profile?.businessName
+                  saveProfileMutation.isPending || !businessName.trim()
                 }
                 onClick={() =>
                   saveProfileMutation.mutate({
-                    businessName: profile?.businessName || "Vendor",
-                    description: profile?.description || undefined,
-                    location: profile?.location || undefined,
+                    businessName: businessName.trim(),
+                    description: businessDescription,
+                    location: businessLocation,
+                    headline: headline || null,
                     serviceArea: serviceArea || undefined,
                     remoteAvailable,
-                    contactEmail: contactEmail || undefined,
-                    website: website || undefined,
-                    phone: phone || undefined,
-                    whatsapp: whatsapp || undefined,
-                    imessage: imessage || undefined,
-                    instagram: instagram || undefined,
+                    contactEmail: contactEmail || null,
+                    website: website || null,
+                    phone: phone || null,
+                    whatsapp: whatsapp || null,
+                    imessage: imessage || null,
+                    instagram: instagram || null,
                     standardsAcknowledged,
                   })
                 }
               >
                 {saveProfileMutation.isPending
                   ? "Saving…"
-                  : "Save contact settings"}
+                  : "Save business & contact settings"}
               </button>
+              {saveProfileMutation.error && <div role="alert" className="form-error mt-4">
+                <p>{saveProfileMutation.error.message}</p>
+                {saveProfileMutation.error.data?.code === "PRECONDITION_FAILED" && <Link className="underline" href="/vendor/onboarding">Complete or renew vendor onboarding</Link>}
+              </div>}
+              {saveProfileMutation.isSuccess && <p role="status" className="mt-4">Business and contact settings saved.</p>}
             </div>
             <div className="bg-white border border-[#d9d0c4] p-6 rounded h-fit">
               <p className="text-xs font-bold uppercase tracking-widest text-[#d71466] mb-1">
@@ -990,7 +1113,7 @@ export default function VendorPortal() {
               </p>
             </div>
             <div className="lg:col-span-2">
-              <ContactVerification />
+              <ContactVerification showPhone />
             </div>
             <div className="lg:col-span-2">
               <VendorVerificationCenter />

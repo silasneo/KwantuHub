@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD CONSTRAINT `users_email_normalized` CHECK (`users`.`email` IS NULL OR CAST(`users`.`email` AS BINARY) = CAST(LOWER(TRIM(`users`.`email`)) AS BINARY));

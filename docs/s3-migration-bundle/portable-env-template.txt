@@ -1,0 +1,102 @@
+# KwantuHub portable deployment template
+# Copy to .env locally or configure equivalent server-side secrets.
+# Never commit real values. Never expose server secrets with VITE_.
+
+NODE_ENV=development
+PORT=3000
+APP_URL=http://localhost:3000
+APP_ALLOWED_HOSTS=localhost,127.0.0.1
+JWT_SECRET=replace-with-a-long-random-production-secret
+COOKIE_DOMAIN=
+COOKIE_SECURE=false
+
+# MySQL/TiDB-compatible database
+DATABASE_URL=mysql://kwantuhub:replace-password@127.0.0.1:3306/kwantuhub
+DB_POOL_SIZE=10
+DB_CONNECT_TIMEOUT_MS=10000
+
+# Optional Docker Compose MySQL values
+MYSQL_DATABASE=kwantuhub
+MYSQL_USER=kwantuhub
+MYSQL_PASSWORD=replace-with-local-password
+MYSQL_ROOT_PASSWORD=replace-with-local-root-password
+MYSQL_HOST=mysql
+MYSQL_PORT=3306
+
+# AWS S3 or S3-compatible object storage
+AWS_REGION=us-east-1
+AWS_S3_BUCKET=kwantuhub-assets
+AWS_ACCESS_KEY_ID=replace-with-server-side-access-key
+AWS_SECRET_ACCESS_KEY=replace-with-server-side-secret-key
+AWS_S3_ENDPOINT=
+AWS_S3_FORCE_PATH_STYLE=false
+AWS_S3_PUBLIC_BASE_URL=https://cdn.example.com
+AWS_S3_SIGNED_URL_TTL_SECONDS=300
+AWS_S3_UPLOAD_PREFIX=kwantuhub
+AWS_S3_KMS_KEY_ID=
+
+# Browser-safe public configuration only
+VITE_APP_TITLE=KwantuHub Marketplace
+VITE_TURNSTILE_SITE_KEY=replace-with-public-turnstile-site-key
+VITE_PUBLIC_MAPS_KEY=
+
+# Cloudflare Turnstile
+TURNSTILE_SECRET_KEY=replace-with-server-side-turnstile-secret
+TURNSTILE_EXPECTED_HOSTNAME=localhost
+
+# Twilio Verify
+TWILIO_ACCOUNT_SID=replace-with-twilio-account-sid
+TWILIO_AUTH_TOKEN=replace-with-twilio-auth-token
+TWILIO_VERIFY_SERVICE_SID=replace-with-twilio-verify-service-sid
+
+# Didit hosted KYC
+DIDIT_API_KEY=replace-with-didit-api-key
+DIDIT_WORKFLOW_ID=replace-with-didit-workflow-id
+DIDIT_WEBHOOK_SECRET=replace-with-didit-webhook-secret
+DIDIT_API_BASE_URL=https://verification.didit.me
+DIDIT_WEBHOOK_MAX_AGE_SECONDS=300
+
+# SendPulse transactional email
+SENDPULSE_API_KEY=replace-with-sendpulse-api-key
+SENDPULSE_API_BASE_URL=https://api.sendpulse.com
+SENDPULSE_API_FROM_EMAIL=verified-sender@example.com
+SENDPULSE_API_FROM_NAME=KwantuHub
+SENDPULSE_WEBHOOK_TOKEN=replace-with-long-random-webhook-token
+SENDPULSE_CLIENT_ID=
+SENDPULSE_CLIENT_SECRET=
+
+# Optional SMTP fallback, only if implemented
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASSWORD=
+SMTP_FROM_EMAIL=
+SMTP_FROM_NAME=KwantuHub
+
+# Optional independent maps/AI/voice/image/data providers
+MAPS_PROVIDER=none
+GOOGLE_MAPS_API_KEY=
+MAPBOX_ACCESS_TOKEN=
+LLM_PROVIDER=none
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+IMAGE_PROVIDER=none
+IMAGE_API_KEY=
+VOICE_PROVIDER=none
+VOICE_API_KEY=
+DATA_API_PROVIDER=none
+DATA_API_KEY=
+
+# Worker operation
+WORKER_MODE=external
+WORKER_POLL_INTERVAL_MS=5000
+WORKER_BATCH_SIZE=20
+WORKER_LEASE_SECONDS=120
+NOTIFICATION_RETENTION_DAYS=90
+STORAGE_HEALTHCHECK_ON_STARTUP=true
+
+# Optional observability
+LOG_LEVEL=info
+SENTRY_DSN=
+OTEL_EXPORTER_OTLP_ENDPOINT=
+OTEL_EXPORTER_OTLP_HEADERS=

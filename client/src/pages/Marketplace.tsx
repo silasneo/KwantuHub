@@ -1,51 +1,74 @@
-import { useState, useEffect } from "react";
-import { Link, useSearch } from "wouter";
+import { useState } from "react";
+import { Link, useSearch, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { mediaUrl } from "@/lib/storage";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
+import { validateDiscoveryBounds, type DiscoveryCurrency } from "@shared/discoveryFilters";
+import { marketplaceFilterUrl } from "@shared/discoveryNavigation";
 
 export default function MarketplacePage() {
+  const [, navigate] = useLocation();
   const searchString = useSearch();
   const searchParams = new URLSearchParams(searchString);
 
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const utils = trpc.useUtils();
 
-  const [q, setQ] = useState(searchParams.get("q") || "");
-  const [category, setCategory] = useState(searchParams.get("category") || "");
-  const [type, setType] = useState<"all" | "product" | "service">(
-    (searchParams.get("type") as "product" | "service") || "all"
-  );
-  const [location, setLocation] = useState(searchParams.get("location") || "");
-  const [minPrice, setMinPrice] = useState(searchParams.get("min") || "");
-  const [maxPrice, setMaxPrice] = useState(searchParams.get("max") || "");
-  const [remoteOnly, setRemoteOnly] = useState(
-    searchParams.get("remote") === "true"
-  );
-  const [verifiedOnly, setVerifiedOnly] = useState(
-    searchParams.get("verified") === "true"
-  );
-  const [page, setPage] = useState(Number(searchParams.get("page") || "1"));
-  const [sort, setSort] = useState<"newest" | "oldest" | "title">(
-    (searchParams.get("sort") as "newest" | "oldest" | "title") || "newest"
-  );
+  const q = searchParams.get("q") || "";
+  const category = searchParams.get("category") || "";
+  const type = searchParams.get("type") || "all";
+  const location = searchParams.get("location") || "";
+  const minPrice = searchParams.get("min") || "";
+  const maxPrice = searchParams.get("max") || "";
+  const remoteOnly = searchParams.get("remote") === "true";
+  const verifiedOnly = searchParams.get("verified") === "true";
+  const page = Number(searchParams.get("page") || "1");
+  const sort = searchParams.get("sort") || "newest";
+  const currency = searchParams.get("currency") || "USD";
+  const updateFilter = (key: string, value: string, resetPage = true) => {
+    navigate(marketplaceFilterUrl(searchString, key, value, resetPage));
+  };
+  const setQ = (value: string) => updateFilter("q", value);
+  const setCategory = (value: string) => updateFilter("category", value);
+  const setType = (value: string) => updateFilter("type", value === "all" ? "" : value);
+  const setLocation = (value: string) => updateFilter("location", value);
+  const setMinPrice = (value: string) => updateFilter("min", value);
+  const setMaxPrice = (value: string) => updateFilter("max", value);
+  const setRemoteOnly = (value: boolean) => updateFilter("remote", value ? "true" : "");
+  const setVerifiedOnly = (value: boolean) => updateFilter("verified", value ? "true" : "");
+  const setPage = (value: number) => updateFilter("page", value > 1 ? String(value) : "", false);
+  const setSort = (value: string) => updateFilter("sort", value === "newest" ? "" : value);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
 
-  const { data: categories } = trpc.categories.list.useQuery();
+  const { data: categories, error: categoryError } = trpc.categories.list.useQuery();
+  let filterError = "";
+  try {
+    validateDiscoveryBounds({ minPrice: minPrice ? Number(minPrice) : undefined, maxPrice: maxPrice ? Number(maxPrice) : undefined });
+    if (!Number.isSafeInteger(page) || page < 1 || !/^[1-9]\d*$/.test(searchParams.get("page") || "1")) throw new Error("Page must be a positive whole number.");
+    if (!["all", "product", "service"].includes(type)) throw new Error("Select a valid offering type.");
+    if (!["newest", "oldest", "title", "price_low", "price_high"].includes(sort)) throw new Error("Select a valid sort order.");
+    if (!["USD", "CAD"].includes(currency)) throw new Error("Select USD or CAD; currencies are not converted.");
+    for (const key of ["remote", "verified"]) {
+      if (searchParams.has(key) && !["true", "false"].includes(searchParams.get(key)!)) throw new Error(`Invalid ${key} filter.`);
+    }
+    if (category && categories && !categories.some(item => item.slug === category)) throw new Error("Unknown category. Choose a category or clear filters.");
+  } catch (error) { filterError = error instanceof Error ? error.message : "Invalid filters."; }
 
-  const { data, isLoading } = trpc.marketplace.search.useQuery({
+  const { data, isLoading, error, refetch } = trpc.marketplace.search.useQuery({
     q: q || undefined,
     category: category || undefined,
-    type: type !== "all" ? type : undefined,
+    type: type !== "all" ? type as "product" | "service" : undefined,
     location: location || undefined,
     minPrice: minPrice ? Number(minPrice) : undefined,
     maxPrice: maxPrice ? Number(maxPrice) : undefined,
     remote: remoteOnly || undefined,
     verified: verifiedOnly || undefined,
-    sort,
+    currency: currency as DiscoveryCurrency,
+    sort: sort as "newest" | "oldest" | "title" | "price_low" | "price_high",
     page,
     pageSize: 12,
-  });
+  }, { enabled: !filterError });
 
   const toggleWishlist = trpc.buyer.toggleWishlist.useMutation({
     onSuccess: () => {
@@ -53,34 +76,7 @@ export default function MarketplacePage() {
     },
   });
 
-  // Keep URL parameters in sync
-  useEffect(() => {
-    const params = new URLSearchParams();
-    if (q) params.set("q", q);
-    if (category) params.set("category", category);
-    if (type !== "all") params.set("type", type);
-    if (location) params.set("location", location);
-    if (minPrice) params.set("min", minPrice);
-    if (maxPrice) params.set("max", maxPrice);
-    if (remoteOnly) params.set("remote", "true");
-    if (verifiedOnly) params.set("verified", "true");
-    if (page > 1) params.set("page", String(page));
-    if (sort !== "newest") params.set("sort", sort);
-    const newSearch = params.toString() ? `?${params.toString()}` : "";
-    window.history.replaceState(null, "", `/marketplace${newSearch}`);
-  }, [q, category, type, location, minPrice, maxPrice, remoteOnly, verifiedOnly, sort, page]);
-
-  const clearFilters = () => {
-    setQ("");
-    setCategory("");
-    setType("all");
-    setLocation("");
-    setMinPrice("");
-    setMaxPrice("");
-    setRemoteOnly(false);
-    setVerifiedOnly(false);
-    setPage(1);
-  };
+  const clearFilters = () => navigate("/marketplace");
 
   return (
     <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
@@ -221,12 +217,17 @@ export default function MarketplacePage() {
             {/* Price Range */}
             <div className="pt-3 border-t border-[#eee8df]">
               <label className="text-[10px] font-bold uppercase tracking-wider text-[#68635c] block mb-1">
-                Price range (USD)
+                Price range (overlapping offers)
               </label>
+              <select aria-label="Price currency" value={currency} onChange={event => updateFilter("currency", event.target.value)} className="w-full border rounded p-2 mb-2 text-xs">
+                <option value="USD">USD — US dollars</option><option value="CAD">CAD — Canadian dollars</option>
+              </select>
+              <p className="text-xs mb-2">No currency conversion. Bare $ prices mean USD. “Inquire” and other nonnumeric prices are excluded when a price bound is set.</p>
               <div className="grid grid-cols-2 gap-2">
                 <input
                   type="number"
                   min="0"
+                  step="0.01"
                   value={minPrice}
                   onChange={e => setMinPrice(e.target.value)}
                   placeholder="Min"
@@ -235,6 +236,7 @@ export default function MarketplacePage() {
                 <input
                   type="number"
                   min="0"
+                  step="0.01"
                   value={maxPrice}
                   onChange={e => setMaxPrice(e.target.value)}
                   placeholder="Max"
@@ -261,13 +263,18 @@ export default function MarketplacePage() {
                   onChange={e => setVerifiedOnly(e.target.checked)}
                   className="mt-0.5"
                 />
-                <span>Verified Vendor only</span>
+                <span>Identity-verified vendors only (not administrator approval or contact verification)</span>
               </label>
             </div>
           </aside>
 
           {/* Right Listings Column */}
           <div>
+            {(filterError || error || categoryError || toggleWishlist.error) && <div role="alert" className="mb-5 border border-red-300 p-4 text-red-800">
+              <p>{filterError || error?.message || categoryError?.message || toggleWishlist.error?.message}</p>
+              <button className="underline mr-4" onClick={clearFilters}>Clear filters</button>
+              {!filterError && <button className="underline" onClick={() => refetch()}>Retry search</button>}
+            </div>}
             {/* Toolbar */}
             <div className="bg-white border border-[#d9d0c4] p-4 rounded mb-6 flex flex-wrap justify-between items-center gap-4 shadow-xs">
               <span className="font-serif text-base text-[#0a0a0a]">
@@ -285,6 +292,8 @@ export default function MarketplacePage() {
                     <option value="newest">Newest additions</option>
                     <option value="oldest">Oldest</option>
                     <option value="title">Title A–Z</option>
+                    <option value="price_low">Lowest price first ({currency} only)</option>
+                    <option value="price_high">Highest price first ({currency} only)</option>
                   </select>
                 </div>
 
@@ -357,11 +366,10 @@ export default function MarketplacePage() {
                 )}
                 {(minPrice || maxPrice) && (
                   <span className="bg-[#0a0a0a] text-[#f0e8dc] text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded flex items-center gap-1.5">
-                    ${minPrice || "0"}–${maxPrice || "∞"}
+                    {currency} {minPrice || "0"}–{maxPrice || "∞"}
                     <button
                       onClick={() => {
-                        setMinPrice("");
-                        setMaxPrice("");
+                        const params = new URLSearchParams(searchString); params.delete("min"); params.delete("max"); params.delete("page"); navigate(`/marketplace?${params}`);
                       }}
                       className="cursor-pointer"
                     >
@@ -382,7 +390,7 @@ export default function MarketplacePage() {
                 )}
                 {verifiedOnly && (
                   <span className="bg-[#0a0a0a] text-[#f0e8dc] text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded flex items-center gap-1.5">
-                    Verified vendor
+                    Identity verified
                     <button onClick={() => setVerifiedOnly(false)} className="cursor-pointer">×</button>
                   </span>
                 )}
@@ -390,18 +398,19 @@ export default function MarketplacePage() {
             )}
 
             {/* Results Grid */}
-            {isLoading ? (
+            {filterError || error || categoryError ? null : isLoading ? (
               <div className="text-center py-20 text-[#68635c] font-serif text-lg">
                 Loading community offerings...
               </div>
             ) : (data?.items.length || 0) === 0 ? (
               <div className="bg-white border border-[#d9d0c4] p-12 rounded text-center">
                 <h3 className="font-serif font-bold text-2xl text-[#0a0a0a] mb-2">
-                  No listings meet those filters
+                  {page > 1 ? "No listings on this page" : "No listings meet those filters"}
                 </h3>
                 <p className="text-[#68635c] font-serif mb-6">
-                  Try clearing a category or broadening your search terms.
+                  {page > 1 ? "Results may have changed. Return to the first page without losing your filters." : "Try clearing a category or broadening your search terms."}
                 </p>
+                {page > 1 && <button className="underline mr-4" onClick={() => setPage(1)}>Return to first page</button>}
                 <button
                   onClick={clearFilters}
                   className="text-xs font-bold uppercase tracking-wider text-white brand-gradient px-6 py-2.5 rounded cursor-pointer"
@@ -422,7 +431,7 @@ export default function MarketplacePage() {
                       <div className="h-48 bg-[#0a0a0a] relative overflow-hidden">
                         {item.media?.[0]?.url ? (
                           <img
-                            src={item.media[0].url}
+                            src={mediaUrl(item.media[0].storageKey || item.media[0].url)}
                             alt={item.title}
                             className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
                           />
@@ -447,7 +456,8 @@ export default function MarketplacePage() {
                             onClick={e => {
                               e.preventDefault();
                               e.stopPropagation();
-                              toggleWishlist.mutate({ listingId: item.id });
+                              if (!user?.emailVerifiedAt) navigate(`/verify-account?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+                              else toggleWishlist.mutate({ listingId: item.id });
                             }}
                             className="absolute top-2.5 right-2.5 w-7 h-7 rounded-full bg-white/90 text-[#0a0a0a] hover:text-[#d71466] flex items-center justify-center text-xs shadow-xs"
                             title="Save listing"
@@ -497,7 +507,7 @@ export default function MarketplacePage() {
                       <div className="w-28 h-28 rounded bg-[#0a0a0a] overflow-hidden shrink-0">
                         {item.media?.[0]?.url ? (
                           <img
-                            src={item.media[0].url}
+                            src={mediaUrl(item.media[0].storageKey || item.media[0].url)}
                             alt={item.title}
                             className="w-full h-full object-cover"
                           />
@@ -534,12 +544,12 @@ export default function MarketplacePage() {
               </div>
             )}
 
-            {(data?.pagination?.totalPages || 1) > 1 && (
+            {!filterError && !error && ((data?.pagination?.totalPages || 1) > 1 || page > 1) && (
               <div className="flex items-center justify-between border-t border-[#d9d0c4] mt-8 pt-5">
                 <button
                   type="button"
                   disabled={page <= 1}
-                  onClick={() => setPage(current => Math.max(1, current - 1))}
+                  onClick={() => setPage(Math.max(1, page - 1))}
                   className="text-xs font-bold uppercase tracking-wider text-[#d71466] disabled:opacity-40"
                 >
                   ← Previous
@@ -550,7 +560,7 @@ export default function MarketplacePage() {
                 <button
                   type="button"
                   disabled={page >= (data?.pagination?.totalPages || 1)}
-                  onClick={() => setPage(current => current + 1)}
+                  onClick={() => setPage(page + 1)}
                   className="text-xs font-bold uppercase tracking-wider text-[#d71466] disabled:opacity-40"
                 >
                   Next →

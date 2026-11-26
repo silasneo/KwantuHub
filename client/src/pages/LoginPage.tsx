@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
 import TurnstileField, { turnstileConfigured } from "@/components/TurnstileField";
-import { mediaUrl } from "@/lib/storage";
+import { AuthCard, authField, authLabel, authLink } from "@/components/AuthCard";
 
 export function accountReturnPath() {
   const next = new URLSearchParams(window.location.search).get("next") || "/account";
@@ -50,25 +50,19 @@ export default function LoginPage() {
   const forgot = trpc.auth.requestPasswordReset.useMutation({ onSettled: renew });
   const busy = login.isPending || register.isPending || forgot.isPending;
   const failure = error || login.error?.message || register.error?.message || forgot.error?.message;
-  const fieldClass = "mt-1.5 w-full rounded-xl border border-[#cfc5b8] bg-white px-4 py-3 text-base font-normal transition focus:border-[#d71466] focus:outline-none focus:ring-2 focus:ring-[#d71466]/20";
-  const labelClass = "block text-sm font-semibold text-[#0a0a0a]";
-  const linkClass = "font-semibold text-[#0a0a0a] underline underline-offset-4 hover:text-[#d71466]";
+  const fieldClass = authField;
+  const labelClass = authLabel;
+  const linkClass = authLink;
   const switchMode = (value: "login" | "register" | "forgot") => {
     setMode(value); setError(""); login.reset(); register.reset(); forgot.reset(); renew();
   };
-  return <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
-    <SiteHeader />
-    <main className="flex-1 flex items-center justify-center px-4 py-12 sm:py-16">
-      <section className="w-full max-w-md rounded-[28px] bg-white px-6 py-10 shadow-[0_24px_60px_-28px_rgba(10,10,10,0.35)] ring-1 ring-[#0a0a0a]/5 sm:px-10">
-        <div className="text-center">
-          <img src={mediaUrl("public/Kwantu-identity_fc192da7.svg")} alt="KwantuHub" className="mx-auto mb-5 h-12" />
-          <h1 className="font-serif text-3xl font-bold leading-tight sm:text-4xl">{mode === "login" ? "Welcome back" : mode === "forgot" ? "Reset your password" : "Join KwantuHub"}</h1>
-          <p className="mt-3 text-[15px] text-[#4b4843]">
-            {mode === "login" && <>New to KwantuHub?{" "}<button type="button" className={linkClass} onClick={() => switchMode("register")}>Create an account</button></>}
-            {mode === "register" && <>Already have an account?{" "}<button type="button" className={linkClass} onClick={() => switchMode("login")}>Sign in</button></>}
-            {mode === "forgot" && <>We'll email you a secure reset link.</>}
-          </p>
-        </div>
+  return <AuthCard
+    title={mode === "login" ? "Welcome back" : mode === "forgot" ? "Reset your password" : "Join KwantuHub"}
+    subtitle={<p>
+      {mode === "login" && <>New to KwantuHub?{" "}<button type="button" className={linkClass} onClick={() => switchMode("register")}>Create an account</button></>}
+      {mode === "register" && <>Already have an account?{" "}<button type="button" className={linkClass} onClick={() => switchMode("login")}>Sign in</button></>}
+      {mode === "forgot" && <>We'll email you a secure reset link.</>}
+    </p>}>
         <div className="mt-6 space-y-3 text-center text-sm">
           {failure && <p role="alert" className="form-error !mt-0 rounded-xl bg-[#fdecec] px-4 py-3">{failure}</p>}
           {forgot.data && <p role="status" className="rounded-xl bg-[#eef6ee] px-4 py-3">{forgot.data.message}</p>}
@@ -113,9 +107,5 @@ export default function LoginPage() {
           {pending.data && <Link className={`block ${linkClass}`} href={`/verify-account?next=${encodeURIComponent(accountReturnPath())}`}>Resume email verification for {pending.data.email}</Link>}
           {pending.error && <p role="alert" className="form-error">{pending.error.message}</p>}
         </div>
-        <div className="mt-8 h-px bg-[#e4dcd0]" aria-hidden="true" />
-        <p className="mt-4 text-center text-xs leading-relaxed text-[#4b4843]">By continuing, you agree to our <Link href="/terms" className="underline underline-offset-2">Terms of Use</Link> and <Link href="/privacy" className="underline underline-offset-2">Privacy Policy</Link>.</p>
-      </section>
-    </main><SiteFooter />
-  </div>;
+  </AuthCard>;
 }

@@ -5,6 +5,22 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { AuthCard, authError, authField, authLabel, authLink, authNote, authPanel, authPrimary, authStatus } from "@/components/AuthCard";
 import { ContactVerification } from "@/components/ContactVerification";
 
+const neutral = "bg-[#f5f1eb] text-[#4b4843]";
+const waiting = "bg-[#fff4e0] text-[#8a5a00]";
+function describeKyc(status: string | undefined, verified: boolean) {
+  const start = "Takes about 2 minutes. You'll scan a photo ID and take a quick selfie with our secure partner, Didit, then return here.";
+  if (verified) return { label: "Verified", tone: "bg-[#eef6ee] text-[#1f6b35]", help: "Your identity is confirmed. Continue to step 3.", action: "", canStart: false };
+  switch (status) {
+    case "created": return { label: "Started, not finished", tone: waiting, help: `Pick up where you left off. ${start}`, action: "Continue identity verification", canStart: true };
+    case "submitted":
+    case "in_review": return { label: "Under review", tone: waiting, help: "Thanks, your documents were submitted. Most checks finish within a few minutes; this page updates automatically. If your details don't match your ID, we'll review them manually.", action: "Reopen verification", canStart: true };
+    case "declined": return { label: "Not approved", tone: "bg-[#fdecef] text-[#a3123f]", help: "We couldn't verify your identity. Check that the name and date of birth above match your ID exactly, save, then try again.", action: "Try again", canStart: true };
+    case "expired":
+    case "abandoned": return { label: "Session expired", tone: neutral, help: `Your previous session timed out. ${start}`, action: "Start a new verification", canStart: true };
+    default: return { label: "Not started", tone: neutral, help: start, action: "Verify my identity", canStart: true };
+  }
+}
+
 export default function VendorOnboarding() {
   const [, navigate] = useLocation();
   const { user, loading } = useAuth();
@@ -49,7 +65,8 @@ export default function VendorOnboarding() {
   const check = "flex items-start gap-3 text-sm leading-relaxed";
   const box = "mt-1 h-4 w-4 shrink-0 accent-[#0a0a0a]";
   const sectionTitle = "font-serif text-2xl font-bold";
-  const error = status.error || saveIdentity.error || startKyc.error || saveProfile.error;
+  const error = status.error || saveIdentity.error || saveProfile.error;
+  const kycView = describeKyc(status.data?.kycStatus, Boolean(status.data?.kycVerified));
   const contactsReady = Boolean(user?.emailVerifiedAt && user?.phoneVerifiedAt);
   const steps = [
     { name: "Contact", done: contactsReady },
@@ -95,14 +112,20 @@ export default function VendorOnboarding() {
             <label className={label}>City<input className={field} required autoComplete="address-level2" maxLength={160} value={city} onChange={event => setCity(event.target.value)} /></label>
             </div>
             <label className={label}>Address<input className={field} required minLength={5} maxLength={500} autoComplete="street-address" value={address} onChange={event => setAddress(event.target.value)} /></label>
-            <label className={check}><input className={box} type="checkbox" required checked={consent} onChange={event => setConsent(event.target.checked)} /><span>I accept the <Link href="/terms" className={authLink}>Terms</Link> and <Link href="/privacy" className={authLink}>Privacy Policy</Link> and consent to identity verification through Didit.</span></label>
-            <button className={authPrimary} disabled={saveIdentity.isPending || !consent}>Save personal details</button>
+            <label className={check}><input className={box} type="checkbox" required checked={consent} onChange={event => setConsent(event.target.checked)} /><span>I accept the <Link href="/terms" className={authLink}>Terms</Link> and <Link href="/privacy" className={authLink}>Privacy Policy</Link> and consent to identity verification through Didit, our secure verification partner.</span></label>
+            <p className={authNote}>Enter your name and date of birth exactly as they appear on your photo ID.</p>
+            <button className={authPrimary} disabled={saveIdentity.isPending || !consent}>{saveIdentity.isPending ? "Saving..." : status.data?.details ? "Update personal details" : "Save and continue"}</button>
+            {saveIdentity.isSuccess && <p role="status" className={`${authStatus} text-center`}>Details saved. Now verify your identity below.</p>}
           </form>}
         {status.data?.details && (!status.data.completed || !status.data.kycVerified) && <div className={`${authPanel} text-center`}>
-          <p>Didit status: <span className="font-semibold">{status.data.kycStatus}{status.data.kycVerified ? " - verified" : ""}</span></p>
-          {!status.data.kycVerified && <button type="button" className={authPrimary} disabled={startKyc.isPending} onClick={() => startKyc.mutate()}>Start / resume Didit verification</button>}
-          <button type="button" className={`${authLink} text-sm`} onClick={() => status.refetch()}>Refresh verification status</button>
-          {status.data.kycStatus === "in_review" && <p className={authNote}>Awaiting the signed identity decision or matching identity details. Returning from Didit does not mark verification complete.</p>}
+          <p className="text-sm font-semibold uppercase tracking-wider text-[#4b4843]">Identity verification status</p>
+          <span className={`inline-flex rounded-full px-3 py-1 text-sm font-semibold ${kycView.tone}`}>{kycView.label}</span>
+          <p className={authNote}>{kycView.help}</p>
+          {!status.data.kycVerified && kycView.canStart && <button type="button" className={authPrimary} disabled={startKyc.isPending} onClick={() => startKyc.mutate()}>
+            {startKyc.isPending ? "Opening secure verification..." : kycView.action}
+          </button>}
+          {startKyc.error && <p role="alert" className={authError}>We couldn't start identity verification right now. Please try again in a few minutes, or contact support if this keeps happening.</p>}
+          <button type="button" className={`${authLink} text-sm`} disabled={status.isFetching} onClick={() => status.refetch()}>{status.isFetching ? "Checking..." : "Check verification status"}</button>
         </div>}
         </section>
         {status.data?.kycVerified && !status.data.completed && <form className="space-y-4 border-t border-[#e4dcd0] pt-8" onSubmit={event => {

@@ -606,6 +606,14 @@ export default function BuyerAccount() {
               >
                 Open full profile →
               </Link>
+              {user?.role === "buyer" && (
+                <Link
+                  href="/vendor/onboarding"
+                  className="block mt-4 text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline"
+                >
+                  Become a vendor →
+                </Link>
+              )}
             </section>
             <div className="lg:col-span-2">
               <ContactVerification />

@@ -16,7 +16,7 @@ function countdown(seconds: number) {
 
 export function ContactVerification({ showPhone = false, heading = false }: { showPhone?: boolean; heading?: boolean }) {
   const [phone, setPhone] = useState("");
-  const [country, setCountry] = useState("US");
+  const [country, setCountry] = useState("");
   const [emailCode, setEmailCode] = useState("");
   const [phoneCode, setPhoneCode] = useState("");
   const [emailMessage, setEmailMessage] = useState("");
@@ -67,7 +67,9 @@ export function ContactVerification({ showPhone = false, heading = false }: { sh
   const phoneExpiry = requestPhone.data?.expiresAt ?? status.data?.phone.expiresAt;
   const emailRemaining = remaining(emailExpiry, now);
   const phoneRemaining = remaining(phoneExpiry, now);
-  const error = status.error || countries.error || requestEmail.error || verifyEmail.error || requestPhone.error || verifyPhone.error;
+  const error = status.error || countries.error;
+  const emailError = requestEmail.error || verifyEmail.error;
+  const phoneError = requestPhone.error || verifyPhone.error;
   const field = "border border-[#d9d0c4] rounded p-2 w-full bg-white";
   return <section className="space-y-5">
     {heading && <h2 className="text-center font-serif text-2xl font-bold">Verify your contact details</h2>}
@@ -82,12 +84,13 @@ export function ContactVerification({ showPhone = false, heading = false }: { sh
         <button type="button" className={authPrimary} disabled={verifyEmail.isPending || emailCode.length !== 6 || !emailRemaining} onClick={() => verifyEmail.mutate({ code: emailCode })}>Verify email</button>
       </>}
       {status.data?.email.verified && emailMessage && <p role="status" className={authStatus}>{emailMessage}</p>}
+      {emailError && <p role="alert" className={authError}>{emailError.message}</p>}
     </div>
     {showPhone && <div className={authPanel}>
       <div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold">Phone: {status.data?.phone.value || "Not added"}</p><span className={pill(status.data?.phone.verified)}>{status.data?.phone.verified ? "Verified" : "Not verified"}</span></div>
       {status.data?.phone.verified && !editingPhone && <button type="button" className={`${authLink} text-sm`} onClick={() => { setEditingPhone(true); requestPhone.reset(); setPhoneMessage(""); }}>Change phone number</button>}
       {(!status.data?.phone.verified || editingPhone) && <>
-        <p className={authNote}>Verify email first. Choose an enabled SMS country. Changing a number requires verification again.</p>
+        <p className={authNote}>{status.data?.email.verified ? "" : "Verify email first. "}Choose an enabled SMS country. Changing a number requires verification again.</p>
         {countries.isLoading && <p>Loading available countries...</p>}
         {available?.length === 0 && <p role="alert">SMS verification is currently unavailable. Contact support.</p>}
         <label className={authLabel}>Country<select className={field} disabled={phoneRemaining > 0 || requestPhone.isPending} value={selected ? country : ""} onChange={event => { setCountry(event.target.value); setPhone(""); }}>
@@ -102,6 +105,7 @@ export function ContactVerification({ showPhone = false, heading = false }: { sh
             countryCode: selected.countryCode,
           });
         }}>Send / resend SMS code</button>
+        {phoneError && <p role="alert" className={authError}>{phoneError.message}</p>}
         {phoneMessage && <p role="status" className={authStatus}>{phoneMessage}</p>}
         {phoneRemaining > 0 ? <p className={`${authNote} text-center`}>Code expires in <span role="timer">{countdown(phoneRemaining)}</span>. Resend becomes available after expiry.</p> :
           phoneExpiry && <p className={`${authNote} text-center`}>Code expired. You can request a new SMS code.</p>}

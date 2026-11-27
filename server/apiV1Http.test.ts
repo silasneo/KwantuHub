@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-const BASE_URL = process.env.TEST_API_URL || "http://127.0.0.1:3000";
+// Runs against a live server seeded with demo accounts, e.g. TEST_API_URL=http://127.0.0.1:3000.
+const BASE_URL = process.env.TEST_API_URL;
 
 async function fetchJson(path: string, options: RequestInit = {}) {
   const response = await fetch(`${BASE_URL}${path}`, {
@@ -14,7 +15,7 @@ async function fetchJson(path: string, options: RequestInit = {}) {
   return { status: response.status, body };
 }
 
-describe("Stage 4H real HTTP REST envelopes and error mapping", () => {
+describe.skipIf(!BASE_URL)("Stage 4H real HTTP REST envelopes and error mapping", () => {
   it("returns standard success envelope for /api/v1/health", async () => {
     const { status, body } = await fetchJson("/api/v1/health");
     expect(status).toBe(200);

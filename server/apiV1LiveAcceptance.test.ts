@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-const BASE_URL = process.env.TEST_API_URL || "http://127.0.0.1:3000";
+// Runs against a live server seeded with demo accounts, e.g. TEST_API_URL=http://127.0.0.1:3000.
+const BASE_URL = process.env.TEST_API_URL;
 const DEMO_PASSWORD = "DemoPass123!";
 
 type JsonResponse = { status: number; body: any; headers: Headers };
@@ -24,7 +25,7 @@ async function login(email: string) {
   return setCookie!.split(";")[0]!;
 }
 
-describe("Stage 4H live REST role and privacy acceptance", () => {
+describe.skipIf(!BASE_URL)("Stage 4H live REST role and privacy acceptance", () => {
   it("serves a buyer inquiry collection with a success envelope and no vendor contact PII", async () => {
     const cookie = await login("demo.buyer@kwantuhub.local");
     const response = await request("/api/v1/buyer/inquiries", { headers: { Cookie: cookie } });

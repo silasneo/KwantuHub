@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-const BASE_URL = process.env.TEST_API_URL || "http://127.0.0.1:3000";
+// Runs against a live server seeded with demo accounts, e.g. TEST_API_URL=http://127.0.0.1:3000.
+const BASE_URL = process.env.TEST_API_URL;
 const DEMO_PASSWORD = "DemoPass123!";
 
 async function login(email: string) {
@@ -15,7 +16,7 @@ async function login(email: string) {
   return setCookie!.split(";")[0]!;
 }
 
-describe("Stage 4H async notification lifecycle and admin retry envelopes", () => {
+describe.skipIf(!BASE_URL)("Stage 4H async notification lifecycle and admin retry envelopes", () => {
   it("serves delivery summaries and returns standardized error envelopes on invalid retries", async () => {
     const adminCookie = await login("admin@kwantuhub.local");
 

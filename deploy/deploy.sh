@@ -19,7 +19,10 @@ for file in docker-compose.yml garage.toml deploy/compose.prod.yml deploy/Caddyf
 done
 
 umask 077
-aws ssm get-parameter --name "$ENV_PARAM" --with-decryption --query Parameter.Value --output text > .env.tmp
+# The snap-packaged AWS CLI writes nothing when stdout is redirected to a file, so capture first.
+env_value="$(aws ssm get-parameter --name "$ENV_PARAM" --with-decryption --query Parameter.Value --output text)"
+printf '%s\n' "$env_value" > .env.tmp
+unset env_value
 if ! grep -q '^JWT_SECRET=' .env.tmp; then
   echo "Parameter $ENV_PARAM is empty or missing JWT_SECRET" >&2
   rm -f .env.tmp

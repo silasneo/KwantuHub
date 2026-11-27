@@ -1,0 +1,57 @@
+# Production override for the EC2 VM. Used with the base file:
+#   docker compose -p kwantuhub -f docker-compose.yml -f deploy/compose.prod.yml ...
+# KWANTUHUB_IMAGE is written into /opt/kwantuhub/.env by deploy/deploy.sh.
+x-image: &image ${KWANTUHUB_IMAGE:?Set KWANTUHUB_IMAGE}
+
+services:
+  mysql:
+    # Sized for a 2 GB instance; raise with the instance size.
+    mem_limit: 640m
+    command:
+      - --innodb-buffer-pool-size=192M
+      - --performance-schema=OFF
+      - --max-connections=60
+
+  migrate:
+    image: *image
+
+  import-assets:
+    image: *image
+
+  app:
+    image: *image
+    environment:
+      TRUST_PROXY: uniquelocal
+
+  worker:
+    image: *image
+
+  caddy:
+    image: caddy:2.10-alpine
+    init: true
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-kwantuhub.dreamhivellc.com}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:

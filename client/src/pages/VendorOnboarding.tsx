@@ -21,8 +21,32 @@ function describeKyc(status: string | undefined, verified: boolean) {
   }
 }
 
+function DeclinedGuide() {
+  return <div role="alert" className="rounded-2xl border border-[#f3c2cf] bg-[#fdecef] p-5 text-left text-sm text-[#5c0b24]">
+    <p className="font-semibold">Your identity check was not approved.</p>
+    <p className="mt-1">This usually happens when the photo is unclear or the details don't match your ID. Nothing has been shared with buyers, and you can try again.</p>
+    <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs leading-relaxed">
+      <li>Check that your first name, surname and date of birth above match your ID exactly. If not, correct them and press "Update personal details".</li>
+      <li>Use a valid, unexpired government photo ID (passport, driver's licence or national ID card).</li>
+      <li>Photograph the ID on a flat, dark surface in good light, with all four corners visible and no glare.</li>
+      <li>For the selfie, face the camera directly, remove hats or sunglasses, and make sure only you are in the frame.</li>
+      <li>Press "Try again" below. You can make up to 4 attempts per hour; contact support if it keeps failing.</li>
+    </ol>
+  </div>;
+}
+
+function readReturn() {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("verificationSessionId") ? (params.get("status") || "").toLowerCase() : null;
+}
+
 export default function VendorOnboarding() {
   const [, navigate] = useLocation();
+  const [returned] = useState(readReturn);
+  useEffect(() => {
+    if (returned !== null) window.history.replaceState(null, "", "/vendor/onboarding");
+  }, [returned]);
   const { user, loading } = useAuth();
   const utils = trpc.useUtils();
   const status = trpc.auth.onboardingStatus.useQuery(undefined, { enabled: Boolean(user), refetchInterval: 10_000 });
@@ -77,7 +101,13 @@ export default function VendorOnboarding() {
   return <AuthCard wide footer={false} title="Become a KwantuHub vendor"
     subtitle={user && !loading ? <p>Complete all three steps to activate automatically. Administrators may suspend or re-enable a vendor; there is no manual application approval.</p> : undefined}>
     <div className="mt-8 space-y-8">
-    {loading ? <p className="text-center">Loading account...</p> : !user ? <Link href="/login?next=%2Fvendor%2Fonboarding" className={`${authPrimary} block text-center`}>Create an account or sign in</Link> : <>
+    {loading ? <p className="text-center">Loading account...</p> : !user ? <div className="space-y-4">
+      {returned !== null && <div role="status" className={`${authPanel} text-center text-sm`}>
+        <p className="font-semibold">{returned === "approved" ? "Identity check finished." : returned === "declined" ? "Your identity check was not approved." : "Your identity check was submitted."}</p>
+        <p className={authNote}>Sign in to see your result and continue{returned === "declined" ? ", including how to try again" : ""}. If you completed the check on your phone, you can also return to the tab where you started; it updates automatically.</p>
+      </div>}
+      <Link href="/login?next=%2Fvendor%2Fonboarding" className={`${authPrimary} block text-center`}>{returned !== null ? "Sign in to continue" : "Create an account or sign in"}</Link>
+    </div> : <>
       <ol className="flex items-center justify-center gap-2 sm:gap-3" aria-label="Onboarding progress">
         {steps.map((step, index) => <li key={step.name} className="flex items-center gap-2 sm:gap-3">
           {index > 0 && <span className="h-px w-5 bg-[#cfc5b8] sm:w-8" aria-hidden="true" />}
@@ -120,7 +150,9 @@ export default function VendorOnboarding() {
         {status.data?.details && (!status.data.completed || !status.data.kycVerified) && <div className={`${authPanel} text-center`}>
           <p className="text-sm font-semibold uppercase tracking-wider text-[#4b4843]">Identity verification status</p>
           <span className={`inline-flex rounded-full px-3 py-1 text-sm font-semibold ${kycView.tone}`}>{kycView.label}</span>
-          <p className={authNote}>{kycView.help}</p>
+          {status.data.kycStatus === "declined" && !status.data.kycVerified ? <DeclinedGuide /> : <p className={authNote}>{kycView.help}</p>}
+          {returned !== null && !status.data.kycVerified && ["created", "submitted", "in_review"].includes(status.data.kycStatus) &&
+            <p role="status" className={authStatus}>Welcome back. We're waiting for the result from our verification partner; this usually takes under a minute and this page updates automatically.</p>}
           {!status.data.kycVerified && kycView.canStart && <button type="button" className={authPrimary} disabled={startKyc.isPending} onClick={() => startKyc.mutate()}>
             {startKyc.isPending ? "Opening secure verification..." : kycView.action}
           </button>}

@@ -8,6 +8,7 @@ REF="${2:?git sha required}"
 ROOT=/opt/kwantuhub
 RAW="https://raw.githubusercontent.com/silasneo/KwantuHub/${REF}"
 ENV_PARAM="${KWANTUHUB_ENV_PARAM:-/kwantuhub/prod/env}"
+export AWS_REGION="${AWS_REGION:-eu-west-1}"
 
 mkdir -p "$ROOT/deploy"
 cd "$ROOT"
@@ -19,6 +20,11 @@ done
 
 umask 077
 aws ssm get-parameter --name "$ENV_PARAM" --with-decryption --query Parameter.Value --output text > .env.tmp
+if ! grep -q '^JWT_SECRET=' .env.tmp; then
+  echo "Parameter $ENV_PARAM is empty or missing JWT_SECRET" >&2
+  rm -f .env.tmp
+  exit 1
+fi
 printf '\nKWANTUHUB_IMAGE=%s\n' "$IMAGE" >> .env.tmp
 mv .env.tmp .env
 umask 022

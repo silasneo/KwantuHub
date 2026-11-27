@@ -6,9 +6,33 @@ import {
   SendPulseTransactionalEmailAdapter,
 } from "./sendPulseAdapter";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("SendPulse adapter", () => {
+  it("does not treat a malformed successful HTTP response as accepted email", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
+    const adapter = new SendPulseTransactionalEmailAdapter({
+      apiBaseUrl: "https://api.sendpulse.test", apiKey: "api-key", fromEmail: "hello@example.test", fromName: "KwantuHub",
+    });
+    expect(await adapter.send({
+      to: [{ email: "buyer@example.test" }], subject: "Code", html: "<p>Code</p>", text: "Code", idempotencyKey: "test",
+    })).toMatchObject({ accepted: false });
+  });
+
+  it("sends SMS to international digits only and requires explicit provider acceptance", async () => {
+    vi.stubEnv("SENDPULSE_SMS_SENDER", "KwantuHub");
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('{"result":true}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{"result":false}', { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = new SendPulseTransactionalEmailAdapter({
+      apiBaseUrl: "https://api.sendpulse.test", apiKey: "api-key", clientId: "test", clientSecret: "test",
+      fromEmail: "hello@example.test", fromName: "KwantuHub",
+    });
+    await adapter.sendSms("+14165550123", "123456");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ phones: ["14165550123"], sender: "KwantuHub" });
+    await expect(adapter.sendSms("+14165550123", "123456")).rejects.toThrow("did not accept");
+  });
+
   it("reads API-key credentials and sender aliases from server-only env", () => {
     const config = getSendPulseConfig({
       SENDPULSE_API_KEY: "api-key",

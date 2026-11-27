@@ -1,14 +1,26 @@
-import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  isNull,
+  lte,
+  ne,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import type { MySqlColumn } from "drizzle-orm/mysql-core";
 import {
   analyticsEvents,
-  categories,
   inquiries,
   listingViews,
   listings,
   messages,
+  users,
   vendorProfiles,
 } from "../drizzle/schema";
 import { getDb } from "./db";
+import { summarizeLeadCounts, type LeadStage } from "./leadWorkflow";
 
 export type AnalyticsRange = {
   from?: Date;
@@ -27,23 +39,31 @@ export function resolveAnalyticsScope(
   throw new Error("Analytics access denied");
 }
 
-export function normalizeAnalyticsRange(range: AnalyticsRange = {}): AnalyticsRange {
-  const normalize = (value: Date | undefined, endOfDay = false) => {
-    if (!value) return undefined;
-    return new Date(Date.UTC(
-      value.getUTCFullYear(),
-      value.getUTCMonth(),
-      value.getUTCDate(),
-      endOfDay ? 23 : 0,
-      endOfDay ? 59 : 0,
-      endOfDay ? 59 : 0,
-      endOfDay ? 999 : 0
-    ));
-  };
+export function normalizeAnalyticsRange(
+  range: AnalyticsRange = {}
+): AnalyticsRange {
+  const normalize = (value: Date | undefined, end = false) =>
+    value
+      ? new Date(
+          Date.UTC(
+            value.getUTCFullYear(),
+            value.getUTCMonth(),
+            value.getUTCDate(),
+            end ? 23 : 0,
+            end ? 59 : 0,
+            end ? 59 : 0,
+            end ? 999 : 0
+          )
+        )
+      : undefined;
   const from = normalize(range.from);
   const to = normalize(range.to, true);
   if (from && to && from > to) {
-    return { ...range, from: normalize(range.to), to: normalize(range.from, true) };
+    return {
+      ...range,
+      from: normalize(range.to),
+      to: normalize(range.from, true),
+    };
   }
   return { ...range, from, to };
 }
@@ -52,128 +72,267 @@ export function safeRate(numerator: number, denominator: number) {
   return denominator > 0 ? numerator / denominator : 0;
 }
 
-function dateFilters(column: any, range: AnalyticsRange) {
+function dateFilters(column: MySqlColumn, range: AnalyticsRange): SQL[] {
   return [
-    range.from ? gte(column, range.from) : undefined,
-    range.to ? lte(column, range.to) : undefined,
-  ].filter(Boolean) as any[];
+    ...(range.from ? [gte(column, range.from)] : []),
+    ...(range.to ? [lte(column, range.to)] : []),
+  ];
 }
 
-function listingFilters(range: AnalyticsRange, listingColumn = listings) {
+function listingFilters(range: AnalyticsRange): SQL[] {
   return [
-    range.vendorId ? eq(listingColumn.vendorId, range.vendorId) : undefined,
-    range.categoryId ? eq(listingColumn.categoryId, range.categoryId) : undefined,
-  ].filter(Boolean) as any[];
+    ...(range.vendorId ? [eq(listings.vendorId, range.vendorId)] : []),
+    ...(range.categoryId ? [eq(listings.categoryId, range.categoryId)] : []),
+  ];
 }
 
-export async function getVendorFunnelAnalytics(vendorId: number, range: AnalyticsRange = {}) {
-  range = normalizeAnalyticsRange(range);
+type Database = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+export async function getLeadFunnelAnalytics(range: AnalyticsRange) {
   const db = await getDb();
-  if (!db) return emptyVendorAnalytics(vendorId, range);
-  const scope = { ...range, vendorId };
-  const listingScope = listingFilters(scope);
-  const views = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(listingViews)
-    .innerJoin(listings, eq(listingViews.listingId, listings.id))
-    .where(and(...listingScope, ...dateFilters(listingViews.createdAt, scope)));
-  const listingCount = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(listings)
-    .where(and(...listingScope));
-  const saves = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(analyticsEvents)
-    .innerJoin(listings, eq(analyticsEvents.listingId, listings.id))
-    .where(and(eq(analyticsEvents.eventType, "save_listing"), ...listingScope, ...dateFilters(analyticsEvents.createdAt, scope)));
-  const contactReveals = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(analyticsEvents)
-    .innerJoin(listings, eq(analyticsEvents.listingId, listings.id))
-    .where(and(eq(analyticsEvents.eventType, "reveal_contact"), ...listingScope, ...dateFilters(analyticsEvents.createdAt, scope)));
-  const vendorInquiries = await db
-    .select({ inquiry: inquiries })
+  if (!db) throw new Error("Database unavailable for lead analytics.");
+  range = normalizeAnalyticsRange(range);
+  const rows = await db
+    .select({ stage: inquiries.leadStage, count: sql<number>`count(*)` })
+    .from(inquiries)
+    .innerJoin(listings, eq(listings.id, inquiries.listingId))
+    .where(
+      and(...listingFilters(range), ...dateFilters(inquiries.createdAt, range))
+    )
+    .groupBy(inquiries.leadStage);
+  const counts: Record<LeadStage, number> = {
+    new_inquiry: 0,
+    contacted: 0,
+    quote_sent: 0,
+    deal_won: 0,
+    deal_lost: 0,
+  };
+  for (const row of rows) counts[row.stage] = Number(row.count);
+  return summarizeLeadCounts(counts);
+}
+
+export async function getInquiryResponseMetrics(
+  db: Database,
+  range: AnalyticsRange
+) {
+  // One first vendor response per inquiry, never one sample per message.
+  const responses = db
+    .select({
+      id: inquiries.id,
+      createdAt: inquiries.createdAt,
+      resolved:
+        sql<number>`case when ${inquiries.status} = 'closed' then 1 else 0 end`.as(
+          "resolved"
+        ),
+      firstReply: sql<string | null>`min(${messages.createdAt})`.as(
+        "first_reply"
+      ),
+    })
     .from(inquiries)
     .innerJoin(listings, eq(inquiries.listingId, listings.id))
-    .where(and(eq(inquiries.vendorId, vendorId), ...listingFilters(scope), ...dateFilters(inquiries.createdAt, scope)));
-  const inquiryIds = vendorInquiries.map(row => row.inquiry.id);
-  const inquiryCount = inquiryIds.length;
-  const resolvedCount = vendorInquiries.filter(row => row.inquiry.status === "closed").length;
-  const unread = inquiryIds.length
-    ? await db
-        .select({ count: sql<number>`count(*)` })
-        .from(messages)
-        .innerJoin(inquiries, eq(messages.inquiryId, inquiries.id))
-        .innerJoin(vendorProfiles, eq(inquiries.vendorId, vendorProfiles.id))
-        .where(and(eq(inquiries.vendorId, vendorId), sql`${messages.readAt} is null`, sql`${messages.senderId} <> ${vendorProfiles.userId}`, ...dateFilters(messages.createdAt, scope)))
-    : [{ count: 0 }];
-  const messagesForResponse = inquiryIds.length
-    ? await db
-        .select({ inquiryId: messages.inquiryId, senderId: messages.senderId, createdAt: messages.createdAt, buyerId: inquiries.buyerId })
-        .from(messages)
-        .innerJoin(inquiries, eq(messages.inquiryId, inquiries.id))
-        .where(and(eq(inquiries.vendorId, vendorId), ...dateFilters(messages.createdAt, scope)))
-        .orderBy(messages.createdAt)
-    : [];
-  const responseSeconds = messagesForResponse
-    .reduce((total, message, index, all) => {
-      if (message.senderId !== message.buyerId) return total;
-      const vendorReply = all.slice(index + 1).find(next => next.inquiryId === message.inquiryId && next.senderId !== message.buyerId);
-      return vendorReply ? total + Math.max(0, (vendorReply.createdAt.getTime() - message.createdAt.getTime()) / 1000) : total;
-    }, 0);
-  const responseSamples = messagesForResponse.filter((message, index, all) => message.senderId === message.buyerId && all.slice(index + 1).some(next => next.inquiryId === message.inquiryId && next.senderId !== message.buyerId)).length;
-  const topListings = await db
-    .select({ listingId: listings.id, title: listings.title, inquiries: sql<number>`count(${inquiries.id})` })
-    .from(listings)
-    .leftJoin(inquiries, eq(inquiries.listingId, listings.id))
-    .where(and(...listingScope))
-    .groupBy(listings.id, listings.title)
-    .orderBy(desc(sql`count(${inquiries.id})`))
-    .limit(5);
+    .innerJoin(vendorProfiles, eq(inquiries.vendorId, vendorProfiles.id))
+    .leftJoin(
+      messages,
+      and(
+        eq(messages.inquiryId, inquiries.id),
+        eq(messages.senderId, vendorProfiles.userId),
+        gte(messages.createdAt, inquiries.createdAt),
+        ...(range.to ? [lte(messages.createdAt, range.to)] : [])
+      )
+    )
+    .where(
+      and(...listingFilters(range), ...dateFilters(inquiries.createdAt, range))
+    )
+    .groupBy(inquiries.id, inquiries.createdAt, inquiries.status)
+    .as("responses");
+  const [row] = await db
+    .select({
+      inquiries: sql<number>`count(*)`,
+      responded: sql<number>`count(${responses.firstReply})`,
+      resolved: sql<number>`coalesce(sum(${responses.resolved}), 0)`,
+      averageSeconds: sql<
+        number | null
+      >`avg(timestampdiff(second, ${responses.createdAt}, ${responses.firstReply}))`,
+    })
+    .from(responses);
+  return {
+    inquiries: Number(row.inquiries),
+    responded: Number(row.responded),
+    resolved: Number(row.resolved),
+    averageResponseSeconds:
+      row.averageSeconds === null
+        ? null
+        : Math.round(Number(row.averageSeconds)),
+  };
+}
+
+export async function getVendorFunnelAnalytics(
+  vendorId: number,
+  range: AnalyticsRange = {}
+) {
+  const scope = { ...normalizeAnalyticsRange(range), vendorId };
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable for vendor analytics.");
+  const listingScope = listingFilters(scope);
+  const [
+    views,
+    listingCount,
+    saves,
+    contactReveals,
+    metrics,
+    unread,
+    topListings,
+  ] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(listingViews)
+      .innerJoin(listings, eq(listingViews.listingId, listings.id))
+      .where(
+        and(...listingScope, ...dateFilters(listingViews.createdAt, scope))
+      ),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(listings)
+      .where(and(...listingScope)),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(analyticsEvents)
+      .innerJoin(listings, eq(analyticsEvents.listingId, listings.id))
+      .where(
+        and(
+          eq(analyticsEvents.eventType, "save_listing"),
+          ...listingScope,
+          ...dateFilters(analyticsEvents.createdAt, scope)
+        )
+      ),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(analyticsEvents)
+      .innerJoin(listings, eq(analyticsEvents.listingId, listings.id))
+      .where(
+        and(
+          eq(analyticsEvents.eventType, "reveal_contact"),
+          ...listingScope,
+          ...dateFilters(analyticsEvents.createdAt, scope)
+        )
+      ),
+    getInquiryResponseMetrics(db, scope),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(messages)
+      .innerJoin(inquiries, eq(messages.inquiryId, inquiries.id))
+      .innerJoin(listings, eq(inquiries.listingId, listings.id))
+      .innerJoin(vendorProfiles, eq(inquiries.vendorId, vendorProfiles.id))
+      .where(
+        and(
+          ...listingScope,
+          ...dateFilters(inquiries.createdAt, scope),
+          ...dateFilters(messages.createdAt, scope),
+          isNull(messages.readAt),
+          ne(messages.senderId, vendorProfiles.userId)
+        )
+      ),
+    db
+      .select({
+        listingId: listings.id,
+        title: listings.title,
+        inquiries: sql<number>`count(${inquiries.id})`,
+      })
+      .from(listings)
+      .leftJoin(
+        inquiries,
+        and(
+          eq(inquiries.listingId, listings.id),
+          ...dateFilters(inquiries.createdAt, scope)
+        )
+      )
+      .where(and(...listingScope))
+      .groupBy(listings.id, listings.title)
+      .orderBy(desc(sql`count(${inquiries.id})`), listings.id)
+      .limit(5),
+  ]);
   return {
     scope,
-    views: Number(views[0]?.count || 0),
-    saves: Number(saves[0]?.count || 0),
-    contactReveals: Number(contactReveals[0]?.count || 0),
-    inquiries: inquiryCount,
-    listings: Number(listingCount[0]?.count || 0),
-    unread: Number(unread[0]?.count || 0),
-    resolved: resolvedCount,
-    resolutionRate: safeRate(resolvedCount, inquiryCount),
-    responseRate: safeRate(responseSamples, Math.max(1, inquiryCount)),
-    averageResponseSeconds: responseSamples ? Math.round(responseSeconds / responseSamples) : null,
-    topListings,
+    views: Number(views[0].count),
+    saves: Number(saves[0].count),
+    contactReveals: Number(contactReveals[0].count),
+    listings: Number(listingCount[0].count),
+    inquiries: metrics.inquiries,
+    unread: Number(unread[0].count),
+    resolved: metrics.resolved,
+    responded: metrics.responded,
+    resolutionRate: safeRate(metrics.resolved, metrics.inquiries),
+    responseRate: safeRate(metrics.responded, metrics.inquiries),
+    averageResponseSeconds: metrics.averageResponseSeconds,
+    topListings: topListings.map(item => ({
+      ...item,
+      inquiries: Number(item.inquiries),
+    })),
   };
 }
 
 export async function getAdminFunnelAnalytics(range: AnalyticsRange = {}) {
   range = normalizeAnalyticsRange(range);
   const db = await getDb();
-  if (!db) return { ...emptyAdminAnalytics(), scope: range };
-  const listingScope = listingFilters(range);
-  const [views, contactReveals, inquiryRows, replyCount, resolutionCount] = await Promise.all([
-    db.select({ count: sql<number>`count(*)` }).from(listingViews).innerJoin(listings, eq(listingViews.listingId, listings.id)).where(and(...listingScope, ...dateFilters(listingViews.createdAt, range))),
-    db.select({ count: sql<number>`count(*)` }).from(analyticsEvents).innerJoin(listings, eq(analyticsEvents.listingId, listings.id)).where(and(eq(analyticsEvents.eventType, "reveal_contact"), ...listingScope, ...dateFilters(analyticsEvents.createdAt, range))),
-    db.select({ inquiry: inquiries }).from(inquiries).innerJoin(listings, eq(inquiries.listingId, listings.id)).where(and(...listingScope, ...dateFilters(inquiries.createdAt, range))),
-    db.select({ count: sql<number>`count(*)` }).from(messages).innerJoin(inquiries, eq(messages.inquiryId, inquiries.id)).innerJoin(listings, eq(inquiries.listingId, listings.id)).innerJoin(vendorProfiles, eq(inquiries.vendorId, vendorProfiles.id)).where(and(sql`${messages.senderId} = ${vendorProfiles.userId}`, ...listingScope, ...dateFilters(messages.createdAt, range))),
-    db.select({ count: sql<number>`count(*)` }).from(inquiries).innerJoin(listings, eq(inquiries.listingId, listings.id)).where(and(eq(inquiries.status, "closed"), ...listingScope, ...dateFilters(inquiries.updatedAt, range))),
-  ]);
-  const inquiriesCount = inquiryRows.length;
+  if (!db) throw new Error("Database unavailable for administrator analytics.");
+  const [views, reveals, metrics, accounts, vendors, listingCount] =
+    await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(listingViews)
+        .innerJoin(listings, eq(listingViews.listingId, listings.id))
+        .where(
+          and(
+            ...listingFilters(range),
+            ...dateFilters(listingViews.createdAt, range)
+          )
+        ),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(analyticsEvents)
+        .innerJoin(listings, eq(analyticsEvents.listingId, listings.id))
+        .where(
+          and(
+            eq(analyticsEvents.eventType, "reveal_contact"),
+            ...listingFilters(range),
+            ...dateFilters(analyticsEvents.createdAt, range)
+          )
+        ),
+      getInquiryResponseMetrics(db, range),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(users)
+        .where(and(...dateFilters(users.createdAt, range))),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(vendorProfiles)
+        .where(
+          and(
+            ...dateFilters(vendorProfiles.createdAt, range),
+            ...(range.vendorId ? [eq(vendorProfiles.id, range.vendorId)] : [])
+          )
+        ),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(listings)
+        .where(
+          and(
+            ...listingFilters(range),
+            ...dateFilters(listings.createdAt, range)
+          )
+        ),
+    ]);
   return {
     scope: range,
-    listingViews: Number(views[0]?.count || 0),
-    contactReveals: Number(contactReveals[0]?.count || 0),
-    inquiries: inquiriesCount,
-    replies: Number(replyCount[0]?.count || 0),
-    resolutions: Number(resolutionCount[0]?.count || 0),
-    resolutionRate: safeRate(Number(resolutionCount[0]?.count || 0), inquiriesCount),
+    listingViews: Number(views[0].count),
+    contactReveals: Number(reveals[0].count),
+    inquiries: metrics.inquiries,
+    replies: metrics.responded,
+    resolutions: metrics.resolved,
+    responseRate: safeRate(metrics.responded, metrics.inquiries),
+    resolutionRate: safeRate(metrics.resolved, metrics.inquiries),
+    users: Number(accounts[0].count),
+    vendors: Number(vendors[0].count),
+    listings: Number(listingCount[0].count),
   };
-}
-
-function emptyVendorAnalytics(vendorId: number, range: AnalyticsRange) {
-  return { scope: { ...range, vendorId }, views: 0, saves: 0, contactReveals: 0, inquiries: 0, listings: 0, unread: 0, resolved: 0, resolutionRate: 0, responseRate: 0, averageResponseSeconds: null, topListings: [] };
-}
-
-function emptyAdminAnalytics() {
-  return { listingViews: 0, contactReveals: 0, inquiries: 0, replies: 0, resolutions: 0, resolutionRate: 0 };
 }

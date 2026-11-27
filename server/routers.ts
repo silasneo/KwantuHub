@@ -14,19 +14,17 @@ import {
   getViewHistory,
   removeViewHistoryItem,
   clearViewHistory,
-  getBuyerReviews,
   getListingReviews,
   getRelatedListings,
   getStorefrontBySlug,
   getUserByEmail,
   getPublicVendorContacts,
   getVendorProfileByUserId,
-  getVendorReviews,
   recordAnalyticsEvent,
   searchListings,
   toPublicVendorProfile,
 } from "./db";
-import { getAdminFunnelAnalytics, getVendorFunnelAnalytics, resolveAnalyticsScope } from "./analytics";
+import { getAdminFunnelAnalytics, getLeadFunnelAnalytics, getVendorFunnelAnalytics, resolveAnalyticsScope } from "./analytics";
 import { getVendorTrustSignals, getVendorVerificationBadges } from "./vendorTrust";
 import {
   analyticsEvents,
@@ -51,27 +49,31 @@ import {
   notificationSuppressions,
   notificationWebhookEvents,
   vendorVerificationEvidence,
+  vendorVerificationDecisions,
   vendorVerificationSessions,
   savedSearches,
   savedSearchMatches,
   inquiryLeadHistory,
   verificationChallenges,
 } from "../drizzle/schema";
-import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, like, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   clearAuthCookie,
   hashPassword,
   publicUser,
-  setAuthCookie,
-  signToken,
+  issueAuthSession,
+  revokeRequestSession,
   verifyPassword,
 } from "./jwtAuth";
-import {
-  countUnreadMessages,
-  getConversationMetrics,
-  getConversationState,
-  isInquiryOpen,
-} from "./inquiryWorkflow";
+import { accountEmailSchema, checkLoginAttempt, enforceAuthRateLimit, isDuplicateEmailError, newPasswordSchema, setAccountStatus } from "./accountSecurity";
+import { authSessions } from "../drizzle/schema";
+import { accountOnboarding, accountResetTokens } from "../drizzle/schema";
+import { accountProcedures, queuePasswordReset, removeOwnedAvatar, vendorReady } from "./accountFlows";
+import { isSafeAvatar, TERMS_VERSION } from "./accountPolicy";
+import { adminPhoneCountryProcedures } from "./phoneCountries";
+import { registrationProcedures } from "./registration";
+import { adminEmailPolicyProcedures } from "./emailPolicy";
+import { isInquiryOpen } from "./inquiryWorkflow";
 import {
   enqueueNotificationEvent,
   getOrCreateNotificationPreferences,
@@ -107,38 +109,32 @@ import {
   evaluateReviewIntegrity,
 } from "./listingQuality";
 import { matchesSavedSearch } from "./savedSearchMatcher";
-import { processListingSavedSearchMatches } from "./savedSearchService";
+import { pageInput, pagination } from "../shared/pagination";
+import { buyerWishlist, buyerSavedSearches, portalReviews, portalVendorId, vendorListings, buyerInquiries, vendorInquiries, conversationMessages } from "./portalCollections";
+import { getVendorTrustSignalsBatch, getVendorVerificationBadgesBatch } from "./vendorTrust";
+import { enqueueListingPublication } from "./savedSearchService";
 import { selectVerificationAdapter } from "./vendorVerificationAdapters";
+import { randomUUID } from "node:crypto";
+import { cleanupVendorOrphans, deleteUnreferencedMedia, encodePublicImage, lockVendor, mediaKey, uploadVendorImage, validateMedia } from "./vendorMedia";
+import { evidenceDownloadUrl } from "./privateEvidence";
+import { publicListingEligibility } from "./publicEligibility";
+import { accountSummaryColumns } from "./responseProjections";
+import { createMarketplaceInquiry, replyToMarketplaceInquiry, toggleMarketplaceWishlist, transitionMarketplaceInquiry } from "./marketplaceIntegrity";
+import { reviewManualVerification } from "./verificationDecisions";
+import { assertManualSessionReviewable, sessionChecks } from "./verificationPolicy";
+import { adminEvidenceRetentionProcedures } from "./evidenceRetention";
+import { recoverNotificationDelivery } from "./notificationRecovery";
+import { adminReportingProcedures, analyticsFilterSchema } from "./reporting";
+import { adminSiteContentProcedures, publicSiteContentProcedures } from "./siteContent";
+import { adminManagementProcedures, categoryInputSchema, directorySchema, listingStatusSchema } from "./adminManagement";
+import {
+  storageDelete,
+  storagePut,
+} from "./storage";
 
-const contactRevealAttempts = new Map<string, number[]>();
-const CONTACT_REVEAL_WINDOW_MS = 60_000;
-const CONTACT_REVEAL_LIMIT = 5;
 const INQUIRY_CREATE_WINDOW_MS = 10 * 60_000;
 const INQUIRY_CREATE_LIMIT = 8;
-const INQUIRY_DUPLICATE_COOLDOWN_MS = 24 * 60 * 60_000;
-const inquiryCreateAttempts = new Map<number, number[]>();
-
-function allowContactReveal(key: string) {
-  const now = Date.now();
-  const recent = (contactRevealAttempts.get(key) || []).filter(
-    timestamp => now - timestamp < CONTACT_REVEAL_WINDOW_MS
-  );
-  if (recent.length >= CONTACT_REVEAL_LIMIT) return false;
-  recent.push(now);
-  contactRevealAttempts.set(key, recent);
-  return true;
-}
-
-function allowInquiryCreate(userId: number) {
-  const now = Date.now();
-  const recent = (inquiryCreateAttempts.get(userId) || []).filter(
-    timestamp => now - timestamp < INQUIRY_CREATE_WINDOW_MS
-  );
-  if (recent.length >= INQUIRY_CREATE_LIMIT) return false;
-  recent.push(now);
-  inquiryCreateAttempts.set(userId, recent);
-  return true;
-}
+const priceBoundSchema = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
 
 async function requireTurnstile(
   db: Awaited<ReturnType<typeof getDb>>,
@@ -204,34 +200,29 @@ export const appRouter = router({
     login: publicProcedure
       .input(
         z.object({
-          email: z.string().email(),
-          password: z.string().min(6),
+          email: accountEmailSchema,
+          password: z.string().min(1).max(1024),
         })
       )
       .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const user = await getUserByEmail(input.email);
-        if (!user || !user.passwordHash) {
-          throw new TRPCError({
-            code: "UNAUTHORIZED",
-            message: "Invalid email or password",
-          });
-        }
-
-        const valid = await verifyPassword(input.password, user.passwordHash);
-        if (!valid) {
-          throw new TRPCError({
-            code: "UNAUTHORIZED",
-            message: "Invalid email or password",
-          });
-        }
-
-        const token = await signToken({
-          userId: user.id,
-          email: user.email!,
-          role: user.role,
+        await checkLoginAttempt(db, input.email, getRequestIp(ctx.req), async () => {
+          // Missing accounts also run bcrypt and follow the same failure policy.
+          const valid = await verifyPassword(input.password, user?.passwordHash ?? "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy");
+          return Boolean(user?.passwordHash && valid);
         });
+        if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
 
-        setAuthCookie(ctx.res, token);
+        if (user.status !== "active") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Your account is suspended. Contact support for assistance.",
+          });
+        }
+
+        await issueAuthSession(user, ctx.res);
 
         const vendorProfile = await getVendorProfileByUserId(user.id);
         return {
@@ -242,72 +233,15 @@ export const appRouter = router({
         };
       }),
 
-    // Scoped JWT Registration per SOW
-    register: publicProcedure
-      .input(
-        z.object({
-          name: z.string().min(2),
-          email: z.string().email(),
-          password: z.string().min(6),
-          role: z.enum(["buyer", "vendor"]).default("buyer"),
-          turnstileToken: z.string().max(2048).optional(),
-        })
-      )
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await requireTurnstile(db, ctx.req, null, input.turnstileToken, "register");
-
-        const existing = await getUserByEmail(input.email);
-        if (existing) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "An account with this email already exists",
-          });
-        }
-
-        const passwordHash = await hashPassword(input.password);
-        const openId = `jwt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const avatarUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(
-          input.name
-        )}&backgroundColor=0a0a0a,d71466,fe8129`;
-
-        const [res] = await db.insert(users).values({
-          openId,
-          name: input.name,
-          email: input.email,
-          passwordHash,
-          avatarUrl,
-          role: input.role,
-          status: "active",
-        });
-
-        const token = await signToken({
-          userId: res.insertId,
-          email: input.email,
-          role: input.role,
-        });
-
-        setAuthCookie(ctx.res, token);
-
-        const newUser = await db
-          .select()
-          .from(users)
-          .where(eq(users.id, res.insertId))
-          .limit(1);
-        return {
-          user: {
-            ...publicUser(newUser[0]),
-            vendorProfile: null,
-          },
-        };
-      }),
+    ...registrationProcedures,
 
     updateProfile: protectedProcedure
       .input(
         z.object({
-          name: z.string().min(2).optional(),
-          avatarUrl: z.string().url().optional(),
+          name: z.string().trim().min(2).max(255).optional(),
+          firstName: z.string().trim().min(1).max(100).optional(),
+          lastName: z.string().trim().min(1).max(100).optional(),
+          avatarUrl: z.string().max(1024).refine(isSafeAvatar, "Use an HTTPS image URL or upload an avatar.").nullable().optional(),
           notificationPreferences: z
             .object({
               emailInquiries: z.boolean().optional(),
@@ -320,18 +254,28 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-
-        await db
-          .update(users)
-          .set({
+        await enforceAuthRateLimit(db, "profile_save", String(ctx.user.id), 30, 60 * 60_000);
+        const oldAvatar = await db.transaction(async tx => {
+        const [oldUser] = await tx.select().from(users).where(eq(users.id, ctx.user.id)).for("update");
+        if (!oldUser || oldUser.status !== "active") throw new TRPCError({ code: "UNAUTHORIZED", message: "Sign in again." });
+        if (input.avatarUrl?.startsWith("/media/") && input.avatarUrl !== oldUser.avatarUrl) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Use the avatar upload control for stored images." });
+        }
+        await tx.update(users).set({
             ...(input.name ? { name: input.name } : {}),
-            ...(input.avatarUrl ? { avatarUrl: input.avatarUrl } : {}),
+            ...(input.firstName ? { firstName: input.firstName } : {}),
+            ...(input.lastName ? { lastName: input.lastName } : {}),
+            ...(input.firstName || input.lastName ? { name: `${input.firstName ?? oldUser.firstName ?? ""} ${input.lastName ?? oldUser.lastName ?? ""}`.trim() } : {}),
+            ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
             ...(input.notificationPreferences
               ? { notificationPreferences: input.notificationPreferences }
               : {}),
             updatedAt: new Date(),
           })
           .where(eq(users.id, ctx.user.id));
+        return oldUser.avatarUrl;
+        });
+        if (input.avatarUrl !== undefined && input.avatarUrl !== oldAvatar) await removeOwnedAvatar(oldAvatar, ctx.user.id);
 
         const updated = await db
           .select()
@@ -341,8 +285,8 @@ export const appRouter = router({
         return updated[0] ? publicUser(updated[0]) : null;
       }),
 
-    logout: publicProcedure.mutation(({ ctx }) => {
-      // Clear JWT cookie
+    logout: publicProcedure.mutation(async ({ ctx }) => {
+      await revokeRequestSession(ctx.req);
       clearAuthCookie(ctx.res);
 
       return { success: true } as const;
@@ -351,8 +295,8 @@ export const appRouter = router({
     changePassword: protectedProcedure
       .input(
         z.object({
-          currentPassword: z.string().min(6),
-          newPassword: z.string().min(8),
+          currentPassword: z.string().min(1).max(1024),
+          newPassword: newPasswordSchema,
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -364,186 +308,31 @@ export const appRouter = router({
             message: "Password unavailable",
           });
         }
+        await enforceAuthRateLimit(db, "change_password", String(ctx.user.id), 10, 15 * 60_000);
         if (!(await verifyPassword(input.currentPassword, user.passwordHash))) {
           throw new TRPCError({
             code: "UNAUTHORIZED",
             message: "Current password is incorrect",
           });
         }
-        await db
-          .update(users)
-          .set({
-            passwordHash: await hashPassword(input.newPassword),
-            updatedAt: new Date(),
-          })
-          .where(eq(users.id, ctx.user.id));
+        const passwordHash = await hashPassword(input.newPassword);
+        await db.transaction(async tx => {
+          const [current] = await tx.select().from(users).where(eq(users.id, ctx.user.id)).for("update");
+          if (!current || current.passwordHash !== user.passwordHash || current.status !== "active") {
+            throw new TRPCError({ code: "UNAUTHORIZED", message: "Account changed. Please sign in again." });
+          }
+          await tx.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, ctx.user.id));
+          await tx.delete(authSessions).where(eq(authSessions.userId, ctx.user.id));
+          await tx.delete(accountResetTokens).where(eq(accountResetTokens.userId, ctx.user.id));
+          await tx.update(verificationChallenges).set({ consumedAt: new Date() }).where(and(
+            eq(verificationChallenges.userId, ctx.user.id), eq(verificationChallenges.purpose, "email_change"), isNull(verificationChallenges.consumedAt)
+          ));
+        });
+        clearAuthCookie(ctx.res);
         return { success: true };
       }),
 
-    contactStatus: protectedProcedure.query(async ({ ctx }) => {
-      const db = await getDb();
-      const user = await requireVerifiedContacts(db, ctx.user.id, {});
-      return {
-        email: {
-          value: user.email,
-          verified: Boolean(user.email && user.emailVerifiedAt),
-        },
-        phone: {
-          value: user.phone ? maskContact("phone", user.phone) : null,
-          verified: Boolean(user.phone && user.phoneVerifiedAt),
-        },
-      };
-    }),
-
-    requestEmailOtp: protectedProcedure
-      .input(z.object({ turnstileToken: z.string().max(2048).optional() }).optional())
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        await requireTurnstile(db, ctx.req, ctx.user.id, input?.turnstileToken, "email_otp");
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [user] = await db!
-          .select({ id: users.id, email: users.email, emailVerifiedAt: users.emailVerifiedAt })
-          .from(users)
-          .where(eq(users.id, ctx.user.id))
-          .limit(1);
-        if (!user?.email) throw new TRPCError({ code: "BAD_REQUEST", message: "Add an email address first." });
-        if (user.emailVerifiedAt) return { verified: true, destination: maskContact("email", user.email) };
-        const now = new Date();
-        const [recent] = await db
-          .select({ lastSentAt: verificationChallenges.lastSentAt })
-          .from(verificationChallenges)
-          .where(
-            and(
-              eq(verificationChallenges.userId, ctx.user.id),
-              eq(verificationChallenges.channel, "email"),
-              isNull(verificationChallenges.consumedAt),
-              gt(verificationChallenges.lastSentAt, new Date(now.getTime() - OTP_RESEND_COOLDOWN_MS))
-            )
-          )
-          .orderBy(desc(verificationChallenges.createdAt))
-          .limit(1);
-        if (recent) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Wait a moment before requesting another code." });
-        const code = generateOtp();
-        const target = normalizeEmail(user.email);
-        const [created] = await db.insert(verificationChallenges).values({
-          userId: ctx.user.id,
-          channel: "email",
-          purpose: "email_ownership",
-          targetHash: hashVerificationTarget(target),
-          codeCiphertext: encryptOtp(code),
-          attempts: 0,
-          maxAttempts: OTP_MAX_ATTEMPTS,
-          lastSentAt: now,
-          expiresAt: new Date(now.getTime() + OTP_TTL_MS),
-        });
-        await enqueueNotificationEvent(db, {
-          eventType: "CONTACT_VERIFICATION_OTP",
-          idempotencyKey: `contact_otp:${created.insertId}`,
-          recipientUserId: ctx.user.id,
-          entityType: "verification_challenge",
-          entityId: created.insertId,
-          payload: { challengeId: created.insertId },
-        });
-        return { verified: false, destination: maskContact("email", user.email), expiresInSeconds: OTP_TTL_MS / 1000 };
-      }),
-
-    verifyEmailOtp: protectedProcedure
-      .input(z.object({ code: z.string().regex(/^\d{6}$/) }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [challenge] = await db
-          .select()
-          .from(verificationChallenges)
-          .where(
-            and(
-              eq(verificationChallenges.userId, ctx.user.id),
-              eq(verificationChallenges.channel, "email"),
-              eq(verificationChallenges.purpose, "email_ownership"),
-              isNull(verificationChallenges.consumedAt)
-            )
-          )
-          .orderBy(desc(verificationChallenges.createdAt))
-          .limit(1);
-        if (!challenge || isOtpExpired(challenge.expiresAt) || challenge.attempts >= challenge.maxAttempts) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "This email code has expired. Request a new code." });
-        }
-        const valid = hashOtp("email_ownership", input.code) === hashOtp("email_ownership", (() => {
-          try { return decryptOtp(challenge.codeCiphertext); } catch { return "invalid"; }
-        })());
-        if (!valid) {
-          await db.update(verificationChallenges).set({ attempts: challenge.attempts + 1, updatedAt: new Date() }).where(eq(verificationChallenges.id, challenge.id));
-          await recordAbuseSignal(db, { userId: ctx.user.id, signalType: "otp_failed", ip: getRequestIp(ctx.req), metadata: { channel: "email" } });
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Incorrect verification code." });
-        }
-        const verifiedAt = new Date();
-        await db.update(verificationChallenges).set({ consumedAt: verifiedAt, updatedAt: verifiedAt }).where(eq(verificationChallenges.id, challenge.id));
-        await db.update(users).set({ emailVerifiedAt: verifiedAt, updatedAt: verifiedAt }).where(eq(users.id, ctx.user.id));
-        return { verified: true };
-      }),
-
-    requestPhoneOtp: protectedProcedure
-      .input(z.object({ phone: z.string().min(10).max(30), turnstileToken: z.string().max(2048).optional() }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        await requireTurnstile(db, ctx.req, ctx.user.id, input.turnstileToken, "phone_otp");
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const phone = normalizePhone(input.phone);
-        if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "Use an international phone number, for example +1 713 555 0148." });
-        const now = new Date();
-        const [recent] = await db!
-          .select({ lastSentAt: verificationChallenges.lastSentAt })
-          .from(verificationChallenges)
-          .where(and(eq(verificationChallenges.userId, ctx.user.id), eq(verificationChallenges.channel, "phone"), isNull(verificationChallenges.consumedAt), gt(verificationChallenges.lastSentAt, new Date(now.getTime() - OTP_RESEND_COOLDOWN_MS))))
-          .orderBy(desc(verificationChallenges.createdAt))
-          .limit(1);
-        if (recent) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Wait a moment before requesting another code." });
-        try {
-          await startPhoneVerification(phone);
-        } catch (error) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "Phone verification is unavailable." });
-        }
-        await db!.update(users).set({ phone, phoneVerifiedAt: null, updatedAt: now }).where(eq(users.id, ctx.user.id));
-        const [created] = await db!.insert(verificationChallenges).values({
-          userId: ctx.user.id,
-          channel: "phone",
-          purpose: "phone_ownership",
-          targetHash: hashVerificationTarget(phone),
-          codeCiphertext: encryptOtp(generateOtp()),
-          attempts: 0,
-          maxAttempts: OTP_MAX_ATTEMPTS,
-          lastSentAt: now,
-          expiresAt: new Date(now.getTime() + OTP_TTL_MS),
-        });
-        return { verified: false, destination: maskContact("phone", phone), challengeId: created.insertId, expiresInSeconds: OTP_TTL_MS / 1000 };
-      }),
-
-    verifyPhoneOtp: protectedProcedure
-      .input(z.object({ code: z.string().regex(/^\d{6}$/) }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [challenge] = await db.select().from(verificationChallenges).where(and(eq(verificationChallenges.userId, ctx.user.id), eq(verificationChallenges.channel, "phone"), eq(verificationChallenges.purpose, "phone_ownership"), isNull(verificationChallenges.consumedAt))).orderBy(desc(verificationChallenges.createdAt)).limit(1);
-        if (!challenge || isOtpExpired(challenge.expiresAt) || challenge.attempts >= challenge.maxAttempts) throw new TRPCError({ code: "BAD_REQUEST", message: "This phone code has expired. Request a new code." });
-        const [user] = await db.select({ phone: users.phone }).from(users).where(eq(users.id, ctx.user.id)).limit(1);
-        if (!user?.phone) throw new TRPCError({ code: "BAD_REQUEST", message: "Phone number is missing." });
-        let approved = false;
-        try {
-          const result = await checkPhoneVerification(user.phone, input.code);
-          approved = result.status === "approved";
-        } catch {
-          approved = false;
-        }
-        if (!approved) {
-          await db.update(verificationChallenges).set({ attempts: challenge.attempts + 1, updatedAt: new Date() }).where(eq(verificationChallenges.id, challenge.id));
-          await recordAbuseSignal(db, { userId: ctx.user.id, signalType: "otp_failed", ip: getRequestIp(ctx.req), metadata: { channel: "phone" } });
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Incorrect verification code." });
-        }
-        const verifiedAt = new Date();
-        await db.update(verificationChallenges).set({ consumedAt: verifiedAt, updatedAt: verifiedAt }).where(eq(verificationChallenges.id, challenge.id));
-        await db.update(users).set({ phoneVerifiedAt: verifiedAt, updatedAt: verifiedAt }).where(eq(users.id, ctx.user.id));
-        return { verified: true };
-      }),
+    ...accountProcedures,
   }),
 
   notifications: router({
@@ -558,19 +347,20 @@ export const appRouter = router({
       )
       .query(async ({ ctx, input }) => {
         const db = await getDb();
-        if (!db) return { items: [], unreadCount: 0 };
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
         const filters = [eq(notifications.recipientUserId, ctx.user.id)];
         if (input.unreadOnly) filters.push(isNull(notifications.readAt));
         if (input.cursor) filters.push(lt(notifications.id, input.cursor));
         if (input.notificationType) {
           filters.push(eq(notifications.notificationType, input.notificationType as typeof notifications.notificationType.enumValues[number]));
         }
-        const items = await db
+        const rows = await db
           .select()
           .from(notifications)
           .where(and(...filters))
-          .orderBy(desc(notifications.createdAt))
-          .limit(input.limit);
+          .orderBy(desc(notifications.id))
+          .limit(input.limit + 1);
+        const items = rows.slice(0, input.limit);
         const [countRow] = await db
           .select({ count: sql<number>`count(*)` })
           .from(notifications)
@@ -583,7 +373,7 @@ export const appRouter = router({
         return {
           items,
           unreadCount: Number(countRow?.count || 0),
-          nextCursor: items.length === input.limit ? items[items.length - 1]?.id ?? null : null,
+          nextCursor: rows.length > input.limit ? items.at(-1)!.id : null,
         };
       }),
 
@@ -655,6 +445,7 @@ export const appRouter = router({
           emailReplies: z.boolean().optional(),
           emailResolutions: z.boolean().optional(),
           emailAccount: z.boolean().optional(),
+          emailSavedSearches: z.boolean().optional(),
           quietHoursStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
           quietHoursEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
           timezone: z.string().min(1).max(64).nullable().optional(),
@@ -679,13 +470,13 @@ export const appRouter = router({
   }),
 
   vendors: router({
-    list: publicProcedure.query(async () => {
-      const vendors = await getAllVendors();
-      return Promise.all(vendors.map(async vendor => ({
-        ...vendor,
-        trust: await getVendorTrustSignals(vendor.id),
-        badges: await getVendorVerificationBadges(vendor.id),
-      })));
+    list: publicProcedure.input(pageInput.extend({ query: z.string().trim().max(160).optional() }).optional()).query(async ({ input }) => {
+      const result = await getAllVendors(input ?? pageInput.parse({}));
+      const ids = result.items.map(vendor => vendor.id);
+      const [trust, badges] = await Promise.all([getVendorTrustSignalsBatch(ids), getVendorVerificationBadgesBatch(ids)]);
+      return { ...result, items: result.items.map(vendor => ({
+        ...vendor, trust: trust.get(vendor.id), badges: badges.get(vendor.id),
+      })) };
     }),
   }),
 
@@ -706,23 +497,26 @@ export const appRouter = router({
           type: z.enum(["product", "service"]).optional(),
           location: z.string().optional(),
           price: z.string().optional(),
-          minPrice: z.number().nonnegative().optional(),
-          maxPrice: z.number().nonnegative().optional(),
+          minPrice: priceBoundSchema.optional(),
+          maxPrice: priceBoundSchema.optional(),
+          currency: z.enum(["USD", "CAD"]).default("USD"),
           remote: z.boolean().optional(),
           verified: z.boolean().optional(),
-          sort: z.enum(["newest", "oldest", "title"]).optional(),
-          page: z.number().int().min(1).default(1),
+          sort: z.enum(["newest", "oldest", "title", "price_low", "price_high"]).optional(),
+          page: z.number().int().min(1).max(10000).default(1),
           pageSize: z.number().int().min(1).max(48).default(12),
-        })
+        }).refine(value => value.minPrice === undefined || value.maxPrice === undefined || value.minPrice <= value.maxPrice, "Minimum price must not exceed maximum price.")
       )
       .query(async ({ input }) => {
         return searchListings(input);
       }),
 
     getListing: publicProcedure
-      .input(z.object({ slug: z.string() }))
+      .input(z.object({ slug: z.string(), preview: z.boolean().optional() }))
       .query(async ({ ctx, input }) => {
-        const item = await getListingBySlug(input.slug, ctx.user?.id);
+        if (input.preview && !ctx.user?.emailVerifiedAt) throw new TRPCError({ code: "FORBIDDEN", message: "Sign in with a verified owner or administrator account to preview." });
+        const item = await getListingBySlug(input.slug, ctx.user?.emailVerifiedAt ? ctx.user.id : undefined,
+          input.preview && ctx.user ? ctx.user : undefined);
         if (!item)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -732,10 +526,10 @@ export const appRouter = router({
       }),
 
     reviews: publicProcedure
-      .input(z.object({ listingId: z.number().int().positive() }))
-      .query(async ({ input }) => getListingReviews(input.listingId)),
+      .input(pageInput.extend({ listingId: z.number().int().positive() }))
+      .query(async ({ input }) => getListingReviews(input.listingId, input)),
 
-    revealContact: protectedProcedure
+    revealContact: publicProcedure
       .input(
         z.object({
           listingId: z.number().int().positive(),
@@ -743,32 +537,18 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const forwarded = ctx.req.headers["x-forwarded-for"];
-        const ip =
-          (typeof forwarded === "string"
-            ? forwarded.split(",")[0]
-            : undefined) ||
-          ctx.req.ip ||
-          "unknown";
-        if (!allowContactReveal(`${ip}:${input.listingId}`)) {
-          throw new TRPCError({
-            code: "TOO_MANY_REQUESTS",
-            message: "Please wait before revealing another contact record.",
-          });
-        }
-
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await requireVerifiedContacts(db, ctx.user.id, { email: true, phone: true });
-        await requireTurnstile(db, ctx.req, ctx.user.id, input.turnstileToken, "reveal_contact");
+        await enforceAuthRateLimit(db, "contact_ip", getRequestIp(ctx.req), 30, 60_000);
         const [listing] = await db
           .select({ id: listings.id, vendorId: listings.vendorId })
           .from(listings)
           .innerJoin(vendorProfiles, eq(listings.vendorId, vendorProfiles.id))
+          .innerJoin(users, eq(vendorProfiles.userId, users.id))
           .where(
             and(
               eq(listings.id, input.listingId),
-              eq(listings.status, "published")
+              publicListingEligibility()
             )
           )
           .limit(1);
@@ -782,7 +562,7 @@ export const appRouter = router({
         const contacts = await getPublicVendorContacts(listing.vendorId);
         await recordAnalyticsEvent({
           eventType: "reveal_contact",
-          userId: ctx.user.id,
+          userId: ctx.user?.id,
           vendorId: listing.vendorId,
           listingId: listing.id,
         });
@@ -798,9 +578,9 @@ export const appRouter = router({
     getRelated: publicProcedure
       .input(
         z.object({
-          listingId: z.number(),
-          categoryId: z.number(),
-          limit: z.number().optional().default(4),
+          listingId: z.number().int().positive(),
+          categoryId: z.number().int().positive(),
+          limit: z.number().int().min(1).max(24).default(4),
         })
       )
       .query(async ({ input }) => {
@@ -811,9 +591,10 @@ export const appRouter = router({
         );
       }),
     getStorefront: publicProcedure
-      .input(z.object({ slug: z.string() }))
-      .query(async ({ input }) => {
-        const item = await getStorefrontBySlug(input.slug);
+      .input(pageInput.extend({ slug: z.string(), preview: z.boolean().optional() }))
+      .query(async ({ ctx, input }) => {
+        if (input.preview && !ctx.user?.emailVerifiedAt) throw new TRPCError({ code: "FORBIDDEN", message: "Sign in with a verified owner or administrator account to preview." });
+        const item = await getStorefrontBySlug(input.slug, input.preview && ctx.user ? ctx.user : undefined, input);
         if (!item)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -828,19 +609,8 @@ export const appRouter = router({
   }),
 
   buyer: router({
-    wishlist: protectedProcedure.query(async ({ ctx }) => {
-      const db = await getDb();
-      if (!db) return [];
-      return db
-        .select({
-          wishlist: wishlists,
-          listing: listings,
-        })
-        .from(wishlists)
-        .innerJoin(listings, eq(wishlists.listingId, listings.id))
-        .where(eq(wishlists.buyerId, ctx.user.id))
-        .orderBy(desc(wishlists.createdAt));
-    }),
+    wishlist: protectedProcedure.input(pageInput.optional()).query(({ ctx, input }) =>
+      buyerWishlist(ctx.user.id, input ?? pageInput.parse({}))),
 
     toggleWishlist: protectedProcedure
       .input(z.object({ listingId: z.number() }))
@@ -848,49 +618,11 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-        const existing = await db
-          .select()
-          .from(wishlists)
-          .where(
-            and(
-              eq(wishlists.buyerId, ctx.user.id),
-              eq(wishlists.listingId, input.listingId)
-            )
-          )
-          .limit(1);
-
-        if (existing.length > 0) {
-          await db
-            .delete(wishlists)
-            .where(
-              and(
-                eq(wishlists.buyerId, ctx.user.id),
-                eq(wishlists.listingId, input.listingId)
-              )
-            );
-          return { saved: false };
-        } else {
-          await db.insert(wishlists).values({
-            buyerId: ctx.user.id,
-            listingId: input.listingId,
-          });
-          const [listing] = await db
-            .select({ vendorId: listings.vendorId })
-            .from(listings)
-            .where(eq(listings.id, input.listingId))
-            .limit(1);
-          await recordAnalyticsEvent({
-            eventType: "save_listing",
-            userId: ctx.user.id,
-            vendorId: listing?.vendorId,
-            listingId: input.listingId,
-          });
-          return { saved: true };
-        }
+        return toggleMarketplaceWishlist(db, ctx.user.id, input.listingId);
       }),
 
-    viewHistory: protectedProcedure.query(async ({ ctx }) =>
-      getViewHistory(ctx.user.id)
+    viewHistory: protectedProcedure.input(pageInput.optional()).query(async ({ ctx, input }) =>
+      getViewHistory(ctx.user.id, input ?? pageInput.parse({}))
     ),
 
     removeViewHistory: protectedProcedure
@@ -905,7 +637,8 @@ export const appRouter = router({
       return { success: true };
     }),
 
-    reviews: protectedProcedure.query(async ({ ctx }) => getBuyerReviews(ctx.user.id)),
+    reviews: protectedProcedure.input(pageInput.optional()).query(async ({ ctx, input }) =>
+      portalReviews(ctx.user.id, false, input ?? pageInput.parse({}))),
 
     submitReview: protectedProcedure
       .input(
@@ -919,17 +652,26 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await requireVerifiedContacts(db, ctx.user.id, { email: true, phone: true });
+        await requireVerifiedContacts(db, ctx.user.id, { email: true });
         await requireTurnstile(db, ctx.req, ctx.user.id, input.turnstileToken, "submit_review");
-        const [listing] = await db
+        return db.transaction(async tx => {
+        await tx.select({ id: users.id }).from(users).where(eq(users.id, ctx.user.id)).for("update");
+        const [listing] = await tx
           .select({ id: listings.id, vendorId: listings.vendorId, status: listings.status })
           .from(listings)
-          .where(eq(listings.id, input.listingId))
+          .where(and(eq(listings.id, input.listingId), publicListingEligibility()))
           .limit(1);
         if (!listing || listing.status !== "published") {
           throw new TRPCError({ code: "NOT_FOUND", message: "Listing not found" });
         }
-        const existing = await db
+        const [priorContact] = await tx.select({ id: inquiries.id }).from(inquiries)
+          .innerJoin(vendorProfiles, eq(vendorProfiles.id, inquiries.vendorId))
+          .where(and(eq(inquiries.buyerId, ctx.user.id), eq(inquiries.vendorId, listing.vendorId),
+            ne(vendorProfiles.userId, ctx.user.id))).limit(1);
+        if (!priorContact) throw new TRPCError({
+          code: "FORBIDDEN", message: "Send this vendor an inquiry before submitting a review.",
+        });
+        const existing = await tx
           .select({ id: reviews.id })
           .from(reviews)
           .where(and(eq(reviews.listingId, input.listingId), eq(reviews.buyerId, ctx.user.id)))
@@ -937,7 +679,7 @@ export const appRouter = router({
         if (existing.length) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "You have already reviewed this listing" });
         }
-        const [created] = await db.insert(reviews).values({
+        const [created] = await tx.insert(reviews).values({
           listingId: listing.id,
           vendorId: listing.vendorId,
           buyerId: ctx.user.id,
@@ -945,7 +687,7 @@ export const appRouter = router({
           comment: input.comment || null,
           status: "pending",
         });
-        await recordAnalyticsEvent({
+        await tx.insert(analyticsEvents).values({
           eventType: "submit_review",
           userId: ctx.user.id,
           vendorId: listing.vendorId,
@@ -953,56 +695,22 @@ export const appRouter = router({
           metadata: { rating: input.rating },
         });
         return { reviewId: created.insertId, status: "pending" as const };
+        });
       }),
 
-    inquiries: protectedProcedure.query(async ({ ctx }) => {
-      const db = await getDb();
-      if (!db) return [];
-      const userInquiries = await db
-        .select({
-          inquiry: inquiries,
-          listing: listings,
-          vendor: vendorProfiles,
-        })
-        .from(inquiries)
-        .innerJoin(listings, eq(inquiries.listingId, listings.id))
-        .innerJoin(vendorProfiles, eq(inquiries.vendorId, vendorProfiles.id))
-        .where(eq(inquiries.buyerId, ctx.user.id))
-        .orderBy(desc(inquiries.updatedAt));
+    inquiries: protectedProcedure.input(pageInput.extend({ inquiryId: z.number().int().positive().optional() }).optional())
+      .query(({ ctx, input }) => buyerInquiries(ctx.user.id, input ?? pageInput.parse({}))),
 
-      return Promise.all(
-        userInquiries.map(async ({ inquiry, listing, vendor }) => {
-          const msgs = await db
-            .select()
-            .from(messages)
-            .where(eq(messages.inquiryId, inquiry.id))
-            .orderBy(messages.createdAt);
-          const visibleMsgs = msgs.filter(message => !message.isHidden);
-          const { vendorPrivateNotes: _privateNotes, ...buyerSafeInquiry } = inquiry;
-          return {
-            ...buyerSafeInquiry,
-            listing,
-            vendor: toPublicVendorProfile(vendor),
-            messages: visibleMsgs,
-            unreadCount: countUnreadMessages(visibleMsgs, ctx.user.id),
-            conversationState: getConversationState(
-              inquiry.status,
-              visibleMsgs,
-              inquiry.buyerId,
-              ctx.user.id
-            ),
-            ...getConversationMetrics(visibleMsgs, inquiry.buyerId),
-          };
-        })
-      );
-    }),
+    messages: protectedProcedure.input(pageInput.extend({ inquiryId: z.number().int().positive() }))
+      .query(({ ctx, input }) => conversationMessages(ctx.user.id, input)),
 
     createInquiry: protectedProcedure
       .input(
         z.object({
-          listingId: z.number(),
-          subject: z.string().min(2).max(255),
-          message: z.string().min(2),
+          listingId: z.number().int().positive(),
+          subject: z.string().trim().min(2).max(255),
+          message: z.string().trim().min(2).max(4000),
+          clientRequestId: z.string().min(1).max(64).optional(),
           turnstileToken: z.string().max(2048).optional(),
         })
       )
@@ -1011,87 +719,9 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         await requireVerifiedContacts(db, ctx.user.id, { email: true });
         await requireTurnstile(db, ctx.req, ctx.user.id, input.turnstileToken, "create_inquiry");
-        if (!allowInquiryCreate(ctx.user.id)) {
-          throw new TRPCError({
-            code: "TOO_MANY_REQUESTS",
-            message: "Too many inquiries. Please try again later.",
-          });
-        }
+        await enforceAuthRateLimit(db, "inquiry_create", String(ctx.user.id), INQUIRY_CREATE_LIMIT, INQUIRY_CREATE_WINDOW_MS);
 
-        const listingRows = await db
-          .select()
-          .from(listings)
-          .where(eq(listings.id, input.listingId))
-          .limit(1);
-        if (!listingRows[0])
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Listing not found",
-          });
-
-        const duplicateSince = new Date(Date.now() - INQUIRY_DUPLICATE_COOLDOWN_MS);
-        const [recentInquiry] = await db
-          .select({ id: inquiries.id })
-          .from(inquiries)
-          .where(
-            and(
-              eq(inquiries.listingId, input.listingId),
-              eq(inquiries.buyerId, ctx.user.id),
-              gt(inquiries.createdAt, duplicateSince)
-            )
-          )
-          .limit(1);
-        if (recentInquiry) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "You already have a recent inquiry for this listing.",
-          });
-        }
-
-        const [inqRes] = await db.insert(inquiries).values({
-          listingId: input.listingId,
-          buyerId: ctx.user.id,
-          vendorId: listingRows[0].vendorId,
-          subject: input.subject,
-          status: "open",
-        });
-
-        await db.insert(messages).values({
-          inquiryId: inqRes.insertId,
-          senderId: ctx.user.id,
-          body: input.message,
-        });
-
-        const [vendorUser] = await db
-          .select({ userId: vendorProfiles.userId })
-          .from(vendorProfiles)
-          .where(eq(vendorProfiles.id, listingRows[0].vendorId))
-          .limit(1);
-        if (vendorUser) {
-          await enqueueNotificationEvent(db, {
-            eventType: "INQUIRY_CREATED",
-            idempotencyKey: `inquiry_created:${inqRes.insertId}:${vendorUser.userId}`,
-            recipientUserId: vendorUser.userId,
-            actorUserId: ctx.user.id,
-            entityType: "inquiry",
-            entityId: inqRes.insertId,
-            payload: {
-              inquiryId: inqRes.insertId,
-              listingId: input.listingId,
-              subject: input.subject,
-              actionUrl: `/account?tab=inquiries&inquiry=${inqRes.insertId}`,
-            },
-          });
-        }
-
-        await recordAnalyticsEvent({
-          eventType: "submit_inquiry",
-          userId: ctx.user.id,
-          vendorId: listingRows[0].vendorId,
-          listingId: input.listingId,
-        });
-
-        return { id: inqRes.insertId, success: true };
+        return createMarketplaceInquiry(db, ctx.user.id, input);
       }),
 
     markInquiryRead: protectedProcedure
@@ -1129,46 +759,7 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-        const [inquiry] = await db
-          .select()
-          .from(inquiries)
-          .where(
-            and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id))
-          )
-          .limit(1);
-        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
-        if (!isInquiryOpen(inquiry.status)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "This inquiry is closed" });
-        }
-
-        const [msg] = await db.insert(messages).values({
-          inquiryId: inquiry.id,
-          senderId: ctx.user.id,
-          body: input.message,
-        });
-        await db.update(inquiries).set({ updatedAt: new Date() }).where(eq(inquiries.id, inquiry.id));
-        const [vendorUser] = await db
-          .select({ userId: vendorProfiles.userId })
-          .from(vendorProfiles)
-          .where(eq(vendorProfiles.id, inquiry.vendorId))
-          .limit(1);
-        if (vendorUser) {
-          await enqueueNotificationEvent(db, {
-            eventType: "INQUIRY_REPLY_RECEIVED",
-            idempotencyKey: `inquiry_reply_received:${msg.insertId}:${vendorUser.userId}`,
-            recipientUserId: vendorUser.userId,
-            actorUserId: ctx.user.id,
-            entityType: "message",
-            entityId: msg.insertId,
-            payload: {
-              inquiryId: inquiry.id,
-              listingId: inquiry.listingId,
-              subject: `Reply to: ${inquiry.subject}`,
-              actionUrl: `/vendor?tab=inquiries&inquiry=${inquiry.id}`,
-            },
-          });
-        }
-        return { id: msg.insertId, success: true };
+        return replyToMarketplaceInquiry(db, ctx.user.id, input);
       }),
 
     closeInquiry: protectedProcedure
@@ -1176,41 +767,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [inquiry] = await db
-          .select()
-          .from(inquiries)
-          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id)))
-          .limit(1);
-        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
-        const [updated] = await db
-          .update(inquiries)
-          .set({ status: "closed", updatedAt: new Date() })
-          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.buyerId, ctx.user.id)));
-        if (!updated || updated.affectedRows === 0) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
-        }
-        const [vendorUser] = await db
-          .select({ userId: vendorProfiles.userId })
-          .from(vendorProfiles)
-          .where(eq(vendorProfiles.id, inquiry.vendorId))
-          .limit(1);
-        if (vendorUser) {
-          await enqueueNotificationEvent(db, {
-            eventType: "INQUIRY_RESOLVED",
-            idempotencyKey: `inquiry_resolved:${inquiry.id}:${vendorUser.userId}`,
-            recipientUserId: vendorUser.userId,
-            actorUserId: ctx.user.id,
-            entityType: "inquiry",
-            entityId: inquiry.id,
-            payload: {
-              inquiryId: inquiry.id,
-              listingId: inquiry.listingId,
-              subject: inquiry.subject,
-              actionUrl: `/vendor?tab=inquiries&inquiry=${inquiry.id}`,
-            },
-          });
-        }
-        return { success: true };
+        return transitionMarketplaceInquiry(db, ctx.user.id, input.inquiryId, "close");
       }),
 
     reopenInquiry: protectedProcedure
@@ -1218,20 +775,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [updated] = await db
-          .update(inquiries)
-          .set({ status: "open", updatedAt: new Date() })
-          .where(
-            and(
-              eq(inquiries.id, input.inquiryId),
-              eq(inquiries.buyerId, ctx.user.id),
-              eq(inquiries.status, "closed")
-            )
-          );
-        if (!updated || updated.affectedRows === 0) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Resolved inquiry not found" });
-        }
-        return { success: true };
+        return transitionMarketplaceInquiry(db, ctx.user.id, input.inquiryId, "reopen");
       }),
 
     archiveInquiry: protectedProcedure
@@ -1239,20 +783,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [updated] = await db
-          .update(inquiries)
-          .set({ status: "archived", updatedAt: new Date() })
-          .where(
-            and(
-              eq(inquiries.id, input.inquiryId),
-              eq(inquiries.buyerId, ctx.user.id),
-              ne(inquiries.status, "archived")
-            )
-          );
-        if (!updated || updated.affectedRows === 0) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
-        }
-        return { success: true };
+        return transitionMarketplaceInquiry(db, ctx.user.id, input.inquiryId, "archive");
       }),
 
     unarchiveInquiry: protectedProcedure
@@ -1260,20 +791,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [updated] = await db
-          .update(inquiries)
-          .set({ status: "open", updatedAt: new Date() })
-          .where(
-            and(
-              eq(inquiries.id, input.inquiryId),
-              eq(inquiries.buyerId, ctx.user.id),
-              eq(inquiries.status, "archived")
-            )
-          );
-        if (!updated || updated.affectedRows === 0) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Archived inquiry not found" });
-        }
-        return { success: true };
+        return transitionMarketplaceInquiry(db, ctx.user.id, input.inquiryId, "unarchive");
       }),
 
     reportConversation: protectedProcedure
@@ -1323,15 +841,8 @@ export const appRouter = router({
         return { id: created.insertId, status: "open" as const };
       }),
 
-    savedSearches: protectedProcedure.query(async ({ ctx }) => {
-      const db = await getDb();
-      if (!db) return [];
-      return db
-        .select()
-        .from(savedSearches)
-        .where(eq(savedSearches.userId, ctx.user.id))
-        .orderBy(desc(savedSearches.createdAt));
-    }),
+    savedSearches: protectedProcedure.input(pageInput.optional()).query(({ ctx, input }) =>
+      buyerSavedSearches(ctx.user.id, input ?? pageInput.parse({}))),
 
     createSavedSearch: protectedProcedure
       .input(
@@ -1341,16 +852,21 @@ export const appRouter = router({
           categoryId: z.number().int().positive().optional(),
           listingType: z.enum(["product", "service"]).optional(),
           location: z.string().trim().max(160).optional(),
-          minPrice: z.number().nonnegative().optional(),
-          maxPrice: z.number().nonnegative().optional(),
+          minPrice: priceBoundSchema.optional(),
+          maxPrice: priceBoundSchema.optional(),
+          currency: z.enum(["USD", "CAD"]).default("USD"),
           remoteOnly: z.boolean().default(false),
           verifiedVendorOnly: z.boolean().default(false),
           alertFrequency: z.enum(["immediate", "daily", "off"]).default("off"),
-        })
+        }).refine(value => value.minPrice === undefined || value.maxPrice === undefined || value.minPrice <= value.maxPrice, "Minimum price must not exceed maximum price.")
       )
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (input.categoryId) {
+          const [category] = await db.select().from(categories).where(and(eq(categories.id, input.categoryId), eq(categories.isActive, true)));
+          if (!category) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active category." });
+        }
         const [res] = await db.insert(savedSearches).values({
           userId: ctx.user.id,
           name: input.name,
@@ -1358,8 +874,9 @@ export const appRouter = router({
           categoryId: input.categoryId || null,
           listingType: input.listingType || null,
           location: input.location || null,
-          minPrice: input.minPrice !== undefined ? Math.round(input.minPrice) : null,
-          maxPrice: input.maxPrice !== undefined ? Math.round(input.maxPrice) : null,
+          minPrice: input.minPrice !== undefined ? input.minPrice.toFixed(2) : null,
+          maxPrice: input.maxPrice !== undefined ? input.maxPrice.toFixed(2) : null,
+          currency: input.currency,
           remoteOnly: input.remoteOnly,
           verifiedVendorOnly: input.verifiedVendorOnly,
           alertFrequency: input.alertFrequency,
@@ -1409,6 +926,64 @@ export const appRouter = router({
   }),
 
   vendor: router({
+    uploadImage: protectedProcedure.input(z.object({ fileBase64: z.string().max(7_000_000) }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await enforceAuthRateLimit(db, "vendor_image", String(ctx.user.id), 40, 60 * 60_000);
+        const bytes = await encodePublicImage(input.fileBase64);
+        return db.transaction(async tx => {
+          const profile = await lockVendor(tx, ctx.user.id);
+          if (profile.approvalStatus === "suspended" || profile.approvalStatus === "rejected") throw new TRPCError({ code: "FORBIDDEN", message: "Vendor account is restricted." });
+          await cleanupVendorOrphans(tx, profile.id);
+          return uploadVendorImage(profile.id, bytes);
+        });
+      }),
+
+    discardImage: protectedProcedure.input(z.object({ url: z.string().max(1024) }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        return db.transaction(async tx => {
+          const profile = await lockVendor(tx, ctx.user.id);
+          const key = mediaKey(input.url);
+          return { deleted: key ? await deleteUnreferencedMedia(tx, profile.id, [key]) : 0 };
+        });
+      }),
+
+    cleanupImages: protectedProcedure.mutation(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      return db.transaction(async tx => cleanupVendorOrphans(tx, (await lockVendor(tx, ctx.user.id)).id));
+    }),
+
+    saveStorefrontMedia: protectedProcedure.input(z.object({
+      logoUrl: z.string().max(1024).nullable(),
+      coverUrl: z.string().max(1024).nullable(),
+    })).mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const result = await db.transaction(async tx => {
+        const profile = await lockVendor(tx, ctx.user.id);
+        if (profile.approvalStatus === "suspended" || profile.approvalStatus === "rejected") throw new TRPCError({ code: "FORBIDDEN", message: "Vendor account is restricted." });
+        const [store] = await tx.select().from(storefronts).where(eq(storefronts.vendorId, profile.id)).for("update");
+        if (!store) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Save your business profile first." });
+        const logo = input.logoUrl ? await validateMedia(input.logoUrl, profile.id, [store.logoUrl ?? ""]) : null;
+        const cover = input.coverUrl ? await validateMedia(input.coverUrl, profile.id, [store.coverUrl ?? ""]) : null;
+        await tx.update(storefronts).set({
+          logoUrl: logo?.url ?? null, logoStorageKey: logo?.storageKey ?? null,
+          coverUrl: cover?.url ?? null, coverStorageKey: cover?.storageKey ?? null,
+        }).where(eq(storefronts.id, store.id));
+        return { vendorId: profile.id, oldKeys: [store.logoStorageKey, store.coverStorageKey].filter((key): key is string => !!key) };
+      });
+      try {
+        await db.transaction(async tx => {
+          await lockVendor(tx, ctx.user.id);
+          await deleteUnreferencedMedia(tx, result.vendorId, result.oldKeys);
+        });
+      } catch (error) { console.error("[Media] Replaced storefront image cleanup failed", error); }
+      return { success: true };
+    }),
     getProfile: protectedProcedure.query(async ({ ctx }) => {
       return getVendorProfileByUserId(ctx.user.id);
     }),
@@ -1416,17 +991,18 @@ export const appRouter = router({
     saveProfile: protectedProcedure
       .input(
         z.object({
-          businessName: z.string().min(2).max(180),
-          description: z.string().optional(),
-          location: z.string().optional(),
-          serviceArea: z.string().optional(),
-          remoteAvailable: z.boolean().default(false),
-          contactEmail: z.string().email().optional(),
-          phone: z.string().max(80).optional(),
-          whatsapp: z.string().max(80).optional(),
-          imessage: z.string().max(120).optional(),
-          instagram: z.string().max(120).optional(),
-          website: z.string().url().optional(),
+          businessName: z.string().trim().min(2).max(180).optional(),
+          headline: z.string().trim().max(255).nullable().optional(),
+          description: z.string().trim().max(10000).optional(),
+          location: z.string().max(160).optional(),
+          serviceArea: z.string().max(240).optional(),
+          remoteAvailable: z.boolean().optional(),
+          contactEmail: z.string().email().nullable().optional(),
+          phone: z.string().max(80).nullable().optional(),
+          whatsapp: z.string().max(80).nullable().optional(),
+          imessage: z.string().max(120).nullable().optional(),
+          instagram: z.string().max(120).nullable().optional(),
+          website: z.string().url().refine(value => new URL(value).protocol === "https:", "Use HTTPS.").nullable().optional(),
           standardsAcknowledged: z.boolean().default(false),
         })
       )
@@ -1434,102 +1010,65 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-        const existing = await db
-          .select()
-          .from(vendorProfiles)
-          .where(eq(vendorProfiles.userId, ctx.user.id))
-          .limit(1);
-
-        const { standardsAcknowledged, ...profileInput } = input;
-        let vendorProfileId: number;
-        if (existing.length > 0) {
-          vendorProfileId = existing[0].id;
-          await db
-            .update(vendorProfiles)
-            .set({
-              ...profileInput,
-              standardsAcknowledgedAt: standardsAcknowledged
-                ? new Date()
-                : existing[0].standardsAcknowledgedAt,
-              approvalStatus: "pending",
-            })
-            .where(eq(vendorProfiles.id, vendorProfileId));
-        } else {
-          const [res] = await db.insert(vendorProfiles).values({
-            userId: ctx.user.id,
-            ...profileInput,
-            standardsAcknowledgedAt: standardsAcknowledged ? new Date() : null,
-            approvalStatus: "pending",
+        await db.transaction(async tx => {
+          const { user, onboarding } = await vendorReady(tx, ctx.user.id);
+          const [profile] = await tx.select().from(vendorProfiles).where(eq(vendorProfiles.userId, user.id)).for("update");
+          if (!profile) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Complete identity onboarding first." });
+          const description = input.description ?? profile.description;
+          const location = input.location ?? profile.location;
+          if (!onboarding.completedAt && (!description?.trim() || !location?.trim() || !input.standardsAcknowledged)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Add a business description, location and accept the community standards." });
+          }
+          // Omitted fields are undefined and therefore preserved by Drizzle updates.
+          const { standardsAcknowledged, headline, ...profileInput } = input;
+          const restricted = profile.approvalStatus === "suspended" || profile.approvalStatus === "rejected";
+          await tx.update(vendorProfiles).set({
+            ...profileInput, approvalStatus: restricted ? profile.approvalStatus : "approved",
+            approvedAt: profile.approvedAt ?? new Date(),
+            standardsAcknowledgedAt: standardsAcknowledged ? new Date() : profile.standardsAcknowledgedAt,
+          }).where(eq(vendorProfiles.id, profile.id));
+          if (user.role !== "admin") await tx.update(users).set({ role: "vendor" }).where(eq(users.id, user.id));
+          const sf = {
+            displayName: input.businessName, headline, description: input.description, location: input.location,
+            serviceArea: input.serviceArea, remoteAvailable: input.remoteAvailable, website: input.website,
+          };
+          const [existingSf] = await tx.select().from(storefronts).where(eq(storefronts.vendorId, profile.id)).for("update");
+          if (existingSf) await tx.update(storefronts).set(sf).where(eq(storefronts.id, existingSf.id));
+          else await tx.insert(storefronts).values({
+            ...sf, displayName: input.businessName ?? profile.businessName, description, location,
+            serviceArea: input.serviceArea ?? profile.serviceArea, remoteAvailable: input.remoteAvailable ?? profile.remoteAvailable,
+            website: input.website === undefined ? profile.website : input.website, vendorId: profile.id,
+            slug: `${(input.businessName ?? profile.businessName).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "vendor"}-${profile.id}`,
           });
-          vendorProfileId = res.insertId;
-        }
-
-        const [accountUser] = await db
-          .select({ phone: users.phone })
-          .from(users)
-          .where(eq(users.id, ctx.user.id))
-          .limit(1);
-        // Update user role to vendor and invalidate phone ownership when the number changes.
-        await db
-          .update(users)
-          .set({
-            role: "vendor",
-            ...(profileInput.phone && profileInput.phone !== accountUser?.phone
-              ? { phone: profileInput.phone, phoneVerifiedAt: null }
-              : {}),
-          })
-          .where(eq(users.id, ctx.user.id));
-
-        // Create or update storefront
-        const slug = input.businessName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/(^-|-$)/g, "");
-        const existingSf = await db
-          .select()
-          .from(storefronts)
-          .where(eq(storefronts.vendorId, vendorProfileId))
-          .limit(1);
-
-        if (existingSf.length > 0) {
-          await db
-            .update(storefronts)
-            .set({
-              displayName: input.businessName,
-              description: input.description,
-              location: input.location,
-              serviceArea: input.serviceArea,
-              remoteAvailable: input.remoteAvailable,
-              website: input.website,
-            })
-            .where(eq(storefronts.id, existingSf[0].id));
-        } else {
-          await db.insert(storefronts).values({
-            vendorId: vendorProfileId,
-            slug: `${slug}-${vendorProfileId}`,
-            displayName: input.businessName,
-            description: input.description,
-            location: input.location,
-            serviceArea: input.serviceArea,
-            remoteAvailable: input.remoteAvailable,
-            website: input.website,
-          });
-        }
-
+          await tx.update(accountOnboarding).set({ completedAt: onboarding.completedAt ?? new Date() }).where(eq(accountOnboarding.userId, user.id));
+        });
         return getVendorProfileByUserId(ctx.user.id);
       }),
 
-    listings: protectedProcedure.query(async ({ ctx }) => {
-      const db = await getDb();
-      if (!db) return [];
-      const profile = await getVendorProfileByUserId(ctx.user.id);
-      if (!profile) return [];
+    archiveListing: protectedProcedure.input(z.object({ id: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        return db.transaction(async tx => {
+          const profile = await lockVendor(tx, ctx.user.id);
+          const [listing] = await tx.select({ id: listings.id, status: listings.status }).from(listings)
+            .where(and(eq(listings.id, input.id), eq(listings.vendorId, profile.id))).for("update");
+          if (!listing) throw new TRPCError({ code: "NOT_FOUND", message: "Listing not found." });
+          if (listing.status !== "archived") {
+            const [updated] = await tx.update(listings).set({ status: "archived" })
+              .where(and(eq(listings.id, listing.id), eq(listings.vendorId, profile.id)));
+            if (!updated.affectedRows) throw new TRPCError({ code: "NOT_FOUND", message: "Listing not found." });
+            await tx.insert(moderationRecords).values({
+              entityType: "listing", entityId: String(listing.id), actorId: ctx.user.id,
+              action: "owner_archived", reason: "Owner removed listing from discovery; inquiries, reviews and media retained.",
+            });
+          }
+          return { id: listing.id, status: "archived" as const, success: true };
+        });
+      }),
 
-      return db
-        .select()
-        .from(listings)
-        .where(eq(listings.vendorId, profile.id))
-        .orderBy(desc(listings.createdAt));
+    listings: protectedProcedure.input(pageInput.optional()).query(async ({ ctx, input }) => {
+      return vendorListings(await portalVendorId(ctx.user.id), input ?? pageInput.parse({}));
     }),
 
     analytics: protectedProcedure
@@ -1563,19 +1102,17 @@ export const appRouter = router({
       return getVendorFunnelAnalytics(profile.id, { ...scope, ...(input || {}) });
     }),
 
-    reviews: protectedProcedure.query(async ({ ctx }) => {
-      const profile = await getVendorProfileByUserId(ctx.user.id);
-      if (!profile) return [];
-      return getVendorReviews(profile.id);
+    reviews: protectedProcedure.input(pageInput.optional()).query(async ({ ctx, input }) => {
+      return portalReviews(await portalVendorId(ctx.user.id) ?? 0, true, input ?? pageInput.parse({}));
     }),
 
     saveListing: protectedProcedure
       .input(
         z.object({
-          id: z.number().optional(),
+          id: z.number().int().positive().optional(),
           title: z.string().min(2).max(220),
           description: z.string().min(10),
-          categoryId: z.number(),
+          categoryId: z.number().int().positive(),
           listingType: z.enum(["product", "service"]),
           priceIndication: z.string().optional(),
           location: z.string().optional(),
@@ -1585,7 +1122,7 @@ export const appRouter = router({
             .default("draft"),
           media: z
             .array(
-              z.string().url().or(z.string().startsWith("/manus-storage/"))
+              z.string().max(1024)
             )
             .max(5)
             .optional(),
@@ -1613,42 +1150,42 @@ export const appRouter = router({
           .replace(/[^a-z0-9]+/g, "-")
           .replace(/(^-|-$)/g, "");
 
-        if (input.id) {
-          const { media: mediaUrls, turnstileToken: _turnstileToken, ...listingFields } = input;
-          await db
+        const result = await db.transaction(async tx => {
+          const lockedProfile = await lockVendor(tx, ctx.user.id);
+          if (lockedProfile.approvalStatus !== "approved") throw new TRPCError({ code: "FORBIDDEN", message: "Approved vendor profile required." });
+          const [category] = await tx.select().from(categories).where(and(eq(categories.id, input.categoryId), eq(categories.isActive, true)));
+          if (!category) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an available category." });
+          const [owned] = input.id ? await tx.select().from(listings)
+            .where(and(eq(listings.id, input.id), eq(listings.vendorId, profile.id))).for("update") : [];
+          if (input.id && !owned) throw new TRPCError({ code: "NOT_FOUND", message: "Listing not found." });
+          const oldMedia = owned ? await tx.select().from(listingMedia).where(eq(listingMedia.listingId, owned.id)) : [];
+          const validated = input.media === undefined ? undefined : await Promise.all(input.media.map(url => validateMedia(url, profile.id, oldMedia.map(item => item.url))));
+          if (owned) {
+          const { id: _id, media: _media, turnstileToken: _turnstileToken, ...listingFields } = input;
+          const [updated] = await tx
             .update(listings)
             .set({
               ...listingFields,
               storefrontId: profile.storefront?.id || null,
-              publishedAt: input.status === "published" ? new Date() : null,
+              publishedAt: input.status === "published" && owned.status !== "published" ? new Date() : owned.publishedAt,
             })
             .where(
-              and(eq(listings.id, input.id), eq(listings.vendorId, profile.id))
+              and(eq(listings.id, owned.id), eq(listings.vendorId, profile.id))
             );
-
-          if (mediaUrls !== undefined) {
-            await db
+          if (!updated.affectedRows) throw new TRPCError({ code: "NOT_FOUND", message: "Listing not found." });
+          if (validated !== undefined) {
+            await tx
               .delete(listingMedia)
-              .where(eq(listingMedia.listingId, input.id));
-            if (mediaUrls.length > 0) {
-              await db.insert(listingMedia).values(
-                mediaUrls.slice(0, 5).map((url, sortOrder) => ({
-                  listingId: input.id!,
-                  url,
-                  sortOrder,
-                }))
-              );
+              .where(eq(listingMedia.listingId, owned.id));
+            if (validated.length > 0) {
+              await tx.insert(listingMedia).values(validated.map((item, sortOrder) => ({ ...item, listingId: owned.id, sortOrder })));
             }
           }
-          if (input.status === "published") {
-            processListingSavedSearchMatches(input.id).catch(err => {
-              console.warn("[SavedSearch] Match processing error:", err);
-            });
-          }
-          return { id: input.id, success: true };
+          if (input.status === "published" && owned.status !== "published") await enqueueListingPublication(tx, owned.id, ctx.user.id);
+          return { id: owned.id, success: true, obsoleteKeys: oldMedia.map(item => item.storageKey).filter((key): key is string => !!key) };
         } else {
-          const uniqueSlug = `${slug}-${Date.now().toString().slice(-6)}`;
-          const [res] = await db.insert(listings).values({
+          const uniqueSlug = `${slug}-${randomUUID().slice(0, 8)}`;
+          const [res] = await tx.insert(listings).values({
             slug: uniqueSlug,
             vendorId: profile.id,
             storefrontId: profile.storefront?.id || null,
@@ -1662,58 +1199,29 @@ export const appRouter = router({
             status: input.status,
             publishedAt: input.status === "published" ? new Date() : null,
           });
-          if (input.status === "published") {
-            processListingSavedSearchMatches(res.insertId).catch(err => {
-              console.warn("[SavedSearch] Match processing error:", err);
-            });
+          if (validated?.length) {
+            await tx.insert(listingMedia).values(validated.map((item, sortOrder) => ({ ...item, listingId: res.insertId, sortOrder })));
           }
-          return { id: res.insertId, slug: uniqueSlug, success: true };
+          if (input.status === "published") await enqueueListingPublication(tx, res.insertId, ctx.user.id);
+          return { id: res.insertId, slug: uniqueSlug, success: true, obsoleteKeys: [] as string[] };
         }
+        });
+        try {
+          await db.transaction(async tx => {
+            await lockVendor(tx, ctx.user.id);
+            await deleteUnreferencedMedia(tx, profile.id, result.obsoleteKeys);
+          });
+        } catch (error) { console.error("[Media] Replaced listing image cleanup failed", error); }
+        const { obsoleteKeys: _keys, ...response } = result;
+        return response;
       }),
 
-    inquiries: protectedProcedure.query(async ({ ctx }) => {
-      const db = await getDb();
-      if (!db) return [];
-      const profile = await getVendorProfileByUserId(ctx.user.id);
-      if (!profile) return [];
-
-      const vendorInquiries = await db
-        .select({
-          inquiry: inquiries,
-          listing: listings,
-          buyer: users,
-        })
-        .from(inquiries)
-        .innerJoin(listings, eq(inquiries.listingId, listings.id))
-        .innerJoin(users, eq(inquiries.buyerId, users.id))
-        .where(eq(inquiries.vendorId, profile.id))
-        .orderBy(desc(inquiries.updatedAt));
-
-      return Promise.all(
-        vendorInquiries.map(async ({ inquiry, listing, buyer }) => {
-          const msgs = await db
-            .select()
-            .from(messages)
-            .where(eq(messages.inquiryId, inquiry.id))
-            .orderBy(messages.createdAt);
-          const visibleMsgs = msgs.filter(message => !message.isHidden);
-          return {
-            ...inquiry,
-            listing,
-            buyer,
-            messages: visibleMsgs,
-            unreadCount: countUnreadMessages(visibleMsgs, ctx.user.id),
-            conversationState: getConversationState(
-              inquiry.status,
-              visibleMsgs,
-              inquiry.buyerId,
-              ctx.user.id
-            ),
-            ...getConversationMetrics(visibleMsgs, inquiry.buyerId),
-          };
-        })
-      );
+    inquiries: protectedProcedure.input(pageInput.extend({ inquiryId: z.number().int().positive().optional() }).optional()).query(async ({ ctx, input }) => {
+      return vendorInquiries(ctx.user.id, await portalVendorId(ctx.user.id), input ?? pageInput.parse({}));
     }),
+
+    messages: protectedProcedure.input(pageInput.extend({ inquiryId: z.number().int().positive() }))
+      .query(({ ctx, input }) => conversationMessages(ctx.user.id, input)),
 
     markInquiryRead: protectedProcedure
       .input(z.object({ inquiryId: z.number().int().positive() }))
@@ -1754,45 +1262,7 @@ export const appRouter = router({
 
         const profile = await getVendorProfileByUserId(ctx.user.id);
         if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
-        const [inquiry] = await db
-          .select()
-          .from(inquiries)
-          .where(
-            and(eq(inquiries.id, input.inquiryId), eq(inquiries.vendorId, profile.id))
-          )
-          .limit(1);
-        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
-        if (!isInquiryOpen(inquiry.status)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "This inquiry is closed" });
-        }
-
-        const [msgRes] = await db.insert(messages).values({
-          inquiryId: input.inquiryId,
-          senderId: ctx.user.id,
-          body: input.message,
-        });
-
-        await db
-          .update(inquiries)
-          .set({ updatedAt: new Date() })
-          .where(eq(inquiries.id, input.inquiryId));
-
-        await enqueueNotificationEvent(db, {
-          eventType: "INQUIRY_REPLY_RECEIVED",
-          idempotencyKey: `inquiry_reply_received:${msgRes.insertId}:${inquiry.buyerId}`,
-          recipientUserId: inquiry.buyerId,
-          actorUserId: ctx.user.id,
-          entityType: "message",
-          entityId: msgRes.insertId,
-          payload: {
-            inquiryId: inquiry.id,
-            listingId: inquiry.listingId,
-            subject: `Reply to: ${inquiry.subject}`,
-            actionUrl: `/account?tab=inquiries&inquiry=${inquiry.id}`,
-          },
-        });
-
-        return { id: msgRes.insertId, success: true };
+        return replyToMarketplaceInquiry(db, ctx.user.id, input, profile.id);
       }),
 
     closeInquiry: protectedProcedure
@@ -1802,34 +1272,7 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const profile = await getVendorProfileByUserId(ctx.user.id);
         if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
-        const [inquiry] = await db
-          .select()
-          .from(inquiries)
-          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.vendorId, profile.id)))
-          .limit(1);
-        if (!inquiry) throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
-        const [updated] = await db
-          .update(inquiries)
-          .set({ status: "closed", updatedAt: new Date() })
-          .where(and(eq(inquiries.id, input.inquiryId), eq(inquiries.vendorId, profile.id)));
-        if (!updated || updated.affectedRows === 0) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
-        }
-        await enqueueNotificationEvent(db, {
-          eventType: "INQUIRY_RESOLVED",
-          idempotencyKey: `inquiry_resolved:${inquiry.id}:${inquiry.buyerId}`,
-          recipientUserId: inquiry.buyerId,
-          actorUserId: ctx.user.id,
-          entityType: "inquiry",
-          entityId: inquiry.id,
-          payload: {
-            inquiryId: inquiry.id,
-            listingId: inquiry.listingId,
-            subject: inquiry.subject,
-            actionUrl: `/account?tab=inquiries&inquiry=${inquiry.id}`,
-          },
-        });
-        return { success: true };
+        return transitionMarketplaceInquiry(db, ctx.user.id, input.inquiryId, "close", profile.id);
       }),
 
     reopenInquiry: protectedProcedure
@@ -1839,20 +1282,7 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const profile = await getVendorProfileByUserId(ctx.user.id);
         if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
-        const [updated] = await db
-          .update(inquiries)
-          .set({ status: "open", updatedAt: new Date() })
-          .where(
-            and(
-              eq(inquiries.id, input.inquiryId),
-              eq(inquiries.vendorId, profile.id),
-              eq(inquiries.status, "closed")
-            )
-          );
-        if (!updated || updated.affectedRows === 0) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Resolved inquiry not found" });
-        }
-        return { success: true };
+        return transitionMarketplaceInquiry(db, ctx.user.id, input.inquiryId, "reopen", profile.id);
       }),
 
     archiveInquiry: protectedProcedure
@@ -1862,20 +1292,7 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const profile = await getVendorProfileByUserId(ctx.user.id);
         if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
-        const [updated] = await db
-          .update(inquiries)
-          .set({ status: "archived", updatedAt: new Date() })
-          .where(
-            and(
-              eq(inquiries.id, input.inquiryId),
-              eq(inquiries.vendorId, profile.id),
-              ne(inquiries.status, "archived")
-            )
-          );
-        if (!updated || updated.affectedRows === 0) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Inquiry not found" });
-        }
-        return { success: true };
+        return transitionMarketplaceInquiry(db, ctx.user.id, input.inquiryId, "archive", profile.id);
       }),
 
     unarchiveInquiry: protectedProcedure
@@ -1885,20 +1302,7 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const profile = await getVendorProfileByUserId(ctx.user.id);
         if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
-        const [updated] = await db
-          .update(inquiries)
-          .set({ status: "open", updatedAt: new Date() })
-          .where(
-            and(
-              eq(inquiries.id, input.inquiryId),
-              eq(inquiries.vendorId, profile.id),
-              eq(inquiries.status, "archived")
-            )
-          );
-        if (!updated || updated.affectedRows === 0) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Archived inquiry not found" });
-        }
-        return { success: true };
+        return transitionMarketplaceInquiry(db, ctx.user.id, input.inquiryId, "unarchive", profile.id);
       }),
 
     reportConversation: protectedProcedure
@@ -1950,21 +1354,20 @@ export const appRouter = router({
         return { id: created.insertId, status: "open" as const };
       }),
 
-    verificationStatus: protectedProcedure.query(async ({ ctx }) => {
+    verificationStatus: protectedProcedure.input(pageInput.optional()).query(async ({ ctx, input }) => {
       const db = await getDb();
-      if (!db) return null;
-      const profile = await getVendorProfileByUserId(ctx.user.id);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const [profile] = await db.select().from(vendorProfiles).where(eq(vendorProfiles.userId, ctx.user.id)).limit(1);
       if (!profile) return null;
-      const [user] = await db
-        .select({ email: users.email, phone: users.phone, emailVerifiedAt: users.emailVerifiedAt, phoneVerifiedAt: users.phoneVerifiedAt })
-        .from(users)
-        .where(eq(users.id, ctx.user.id))
-        .limit(1);
+      const page = input ?? pageInput.parse({});
+      const scope = eq(vendorVerificationSessions.vendorId, profile.id);
+      const [count] = await db.select({ total: sql<number>`count(*)` }).from(vendorVerificationSessions).where(scope);
       const sessions = await db
         .select()
         .from(vendorVerificationSessions)
-        .where(eq(vendorVerificationSessions.vendorId, profile.id))
-        .orderBy(desc(vendorVerificationSessions.createdAt));
+        .where(scope)
+        .orderBy(desc(vendorVerificationSessions.createdAt), desc(vendorVerificationSessions.id))
+        .limit(page.pageSize).offset((page.page - 1) * page.pageSize);
       const sanitizedSessions = sessions.map(s => ({
         id: s.id,
         provider: s.provider,
@@ -1973,15 +1376,11 @@ export const appRouter = router({
         countryCode: s.countryCode,
         expiresAt: s.expiresAt,
         createdAt: s.createdAt,
+        declinedReason: s.declinedReason,
+        canUpload: s.provider === "manual" && ["created", "submitted", "in_review"].includes(s.status) &&
+          Boolean(s.expiresAt && s.expiresAt > new Date()),
       }));
-      const badges = deriveVendorBadges({
-        emailVerified: Boolean(user?.email && user.emailVerifiedAt),
-        phoneVerified: Boolean(user?.phone && user.phoneVerifiedAt),
-        identityStatus: profile.identityStatus,
-        residenceStatus: profile.residenceStatus,
-        residenceCountry: profile.residenceCountry,
-        approvalStatus: profile.approvalStatus,
-      });
+      const badges = await getVendorVerificationBadges(profile.id);
       return {
         profile: {
           identityStatus: profile.identityStatus,
@@ -1993,6 +1392,7 @@ export const appRouter = router({
         },
         badges,
         sessions: sanitizedSessions,
+        pagination: pagination(Number(count.total), page),
       };
     }),
 
@@ -2006,7 +1406,7 @@ export const appRouter = router({
             "combined_na_vendor",
           ]),
           countryCode: z.enum(["US", "CA", "MX"]),
-          provider: z.enum(["didit", "veriff", "sumsub", "manual"]).default("didit"),
+          provider: z.enum(["didit", "manual"]).default("didit"),
           consentGiven: z.boolean().refine(val => val === true, {
             message: "Consent is required to start vendor verification.",
           }),
@@ -2017,16 +1417,40 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const profile = await getVendorProfileByUserId(ctx.user.id);
         if (!profile) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor profile required" });
+        if (input.provider === "manual" && input.sessionType === "liveness") throw new TRPCError({
+          code: "BAD_REQUEST", message: "Manual documents cannot verify liveness. Use hosted Didit.",
+        });
         const adapter = selectVerificationAdapter(input.provider);
-        const sessionResult = await adapter.createSession({
+        if (!adapter.isConfigured()) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This verification provider is not configured." });
+        return db.transaction(async tx => {
+        await tx.select({ id: users.id }).from(users).where(eq(users.id, ctx.user.id)).for("update");
+        const [lockedProfile] = await tx.select().from(vendorProfiles).where(eq(vendorProfiles.id, profile.id)).for("update");
+        if (["suspended", "rejected"].includes(lockedProfile.approvalStatus)) throw new TRPCError({ code: "FORBIDDEN", message: "Vendor account is restricted." });
+        const checks = sessionChecks(input.sessionType);
+        const [onboarding] = await tx.select().from(accountOnboarding).where(eq(accountOnboarding.userId, ctx.user.id));
+        if (checks.includes("identity") && onboarding?.kycSessionId) throw new TRPCError({
+          code: "PRECONDITION_FAILED", message: "Manage account identity through the onboarding flow or contact support for corrections. Start a residence-only check here.",
+        });
+        const active = await tx.select().from(vendorVerificationSessions).where(and(
+          eq(vendorVerificationSessions.vendorId, profile.id), inArray(vendorVerificationSessions.status, ["created", "submitted", "in_review"]),
+          gt(vendorVerificationSessions.expiresAt, new Date())
+        ));
+        if (active.some(session => sessionChecks(session.sessionType).some(check => checks.includes(check)))) throw new TRPCError({
+          code: "CONFLICT", message: "A current session already covers this check. Complete it or wait until it expires.",
+        });
+        let sessionResult;
+        try { sessionResult = await adapter.createSession({
           vendorId: profile.id,
           userId: ctx.user.id,
           sessionType: input.sessionType,
           countryCode: input.countryCode,
           firstName: ctx.user.name?.split(" ")[0] || "Vendor",
           lastName: ctx.user.name?.split(" ").slice(1).join(" ") || "Applicant",
-        });
-        const [created] = await db.insert(vendorVerificationSessions).values({
+        }); } catch (error) {
+          console.error("[Verification] Hosted session creation failed", error instanceof Error ? error.name : "Error");
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Verification provider unavailable. Retry later.", cause: error });
+        }
+        const [created] = await tx.insert(vendorVerificationSessions).values({
           vendorId: profile.id,
           userId: ctx.user.id,
           provider: input.provider,
@@ -2037,12 +1461,15 @@ export const appRouter = router({
           consentGivenAt: new Date(),
           expiresAt: sessionResult.expiresAt,
         });
-        await db
+        await tx
           .update(vendorProfiles)
           .set({
-            identityStatus: "pending",
-            residenceStatus: "pending",
-            residenceCountry: input.countryCode,
+            ...(checks.includes("identity") && lockedProfile.identityStatus !== "verified" ? {
+              identityStatus: "pending" as const, identityVerificationSessionId: created.insertId,
+            } : {}),
+            ...(checks.includes("residence") && lockedProfile.residenceStatus !== "verified" ? {
+              residenceStatus: "pending" as const, residenceVerificationSessionId: created.insertId,
+            } : {}),
           })
           .where(eq(vendorProfiles.id, profile.id));
         return {
@@ -2051,6 +1478,7 @@ export const appRouter = router({
           verificationUrl: sessionResult.verificationUrl,
           status: sessionResult.status,
         };
+        });
       }),
 
     submitManualEvidence: protectedProcedure
@@ -2064,7 +1492,7 @@ export const appRouter = router({
             "lease_agreement",
             "business_registration",
           ]),
-          fileBase64: z.string().min(10),
+          fileBase64: z.string().min(16).max(7_000_000),
           filename: z.string().min(3).max(255),
         })
       )
@@ -2079,34 +1507,88 @@ export const appRouter = router({
           .where(
             and(
               eq(vendorVerificationSessions.id, input.sessionId),
-              eq(vendorVerificationSessions.vendorId, profile.id)
+              eq(vendorVerificationSessions.vendorId, profile.id),
+              eq(vendorVerificationSessions.userId, ctx.user.id)
             )
           )
           .limit(1);
         if (!session) throw new TRPCError({ code: "NOT_FOUND", message: "Verification session not found" });
+        assertManualSessionReviewable(session);
+        if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.fileBase64)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid document encoding" });
+        }
         const fileBuffer = Buffer.from(input.fileBase64, "base64");
-        const relKey = `evidence/${session.id}/${input.filename.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-        let storageKey = relKey;
+        if (!fileBuffer.length || fileBuffer.length > 5 * 1024 * 1024) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Document must be 5 MB or smaller" });
+        }
+        const extension = input.filename.toLowerCase().split(".").pop();
+        const fileTypes: Record<string, { mimeType: string; matches: (data: Buffer) => boolean }> = {
+          pdf: {
+            mimeType: "application/pdf",
+            matches: data => data.subarray(0, 5).toString() === "%PDF-",
+          },
+          png: {
+            mimeType: "image/png",
+            matches: data =>
+              data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+          },
+          jpg: {
+            mimeType: "image/jpeg",
+            matches: data => data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff,
+          },
+          jpeg: {
+            mimeType: "image/jpeg",
+            matches: data => data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff,
+          },
+        };
+        const fileType = extension ? fileTypes[extension] : undefined;
+        if (!fileType || !fileType.matches(fileBuffer)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Upload a valid PDF, PNG, or JPEG document",
+          });
+        }
+        const storageKey = `private/verification/${session.id}/${randomUUID()}.${extension}`;
         try {
-          const stored = await storagePut(relKey, fileBuffer);
-          storageKey = stored.key;
-        } catch (storageErr) {
-          console.warn("[Verification] Cloud storage presign fallback, stored local key:", storageErr);
+          await storagePut(storageKey, fileBuffer, fileType.mimeType);
+        } catch (storageError) {
+          console.error("[Verification] Private evidence upload failed:", storageError);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Document could not be securely stored. Please try again.",
+          });
         }
         const retentionExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
         const summary = sanitizeEvidenceSummary(input.filename, input.evidenceType);
-        const [created] = await db.insert(vendorVerificationEvidence).values({
-          sessionId: session.id,
-          evidenceType: input.evidenceType,
-          fileStoragePath: storageKey,
-          redactedSummary: summary,
-          retentionExpiresAt,
-        });
-        await db
-          .update(vendorVerificationSessions)
-          .set({ status: "in_review", updatedAt: new Date() })
-          .where(eq(vendorVerificationSessions.id, session.id));
-        return { evidenceId: created.insertId, summary, status: "in_review" as const };
+        try {
+          const evidenceId = await db.transaction(async tx => {
+            const [current] = await tx.select().from(vendorVerificationSessions).where(eq(vendorVerificationSessions.id, session.id)).for("update");
+            assertManualSessionReviewable(current);
+            const documents = await tx.select({ id: vendorVerificationEvidence.id }).from(vendorVerificationEvidence)
+              .where(eq(vendorVerificationEvidence.sessionId, session.id));
+            if (documents.length >= 10) throw new TRPCError({ code: "BAD_REQUEST", message: "A session supports at most 10 documents. Contact support." });
+            const [created] = await tx.insert(vendorVerificationEvidence).values({
+              sessionId: session.id,
+              evidenceType: input.evidenceType,
+              fileStoragePath: storageKey,
+              redactedSummary: summary,
+              retentionExpiresAt,
+            });
+            await tx
+              .update(vendorVerificationSessions)
+              .set({ status: "in_review", updatedAt: new Date() })
+              .where(eq(vendorVerificationSessions.id, session.id));
+            return created.insertId;
+          });
+          return { evidenceId, summary, status: "in_review" as const };
+        } catch (databaseError) {
+          try {
+            await storageDelete(storageKey);
+          } catch (cleanupError) {
+            console.error("[Verification] Failed to clean up orphaned evidence:", cleanupError);
+          }
+          throw databaseError;
+        }
       }),
 
     updateLeadStage: protectedProcedure
@@ -2161,21 +1643,26 @@ export const appRouter = router({
         return { success: true, currentStage: input.stage };
       }),
 
-    leadFunnel: protectedProcedure.query(async ({ ctx }) => {
+    leadFunnel: protectedProcedure.input(analyticsFilterSchema.omit({ vendorId: true }).optional()).query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return computeLeadFunnel([]);
       const profile = await getVendorProfileByUserId(ctx.user.id);
       if (!profile) return computeLeadFunnel([]);
-      const inqRows = await db
-        .select({ leadStage: inquiries.leadStage })
-        .from(inquiries)
-        .where(eq(inquiries.vendorId, profile.id));
-      return computeLeadFunnel(inqRows.map(r => r.leadStage as LeadStage));
+      return getLeadFunnelAnalytics({ ...input, vendorId: profile.id });
     }),
   }),
 
+  siteContent: router(publicSiteContentProcedures),
   admin: router({
-    pendingVendors: protectedProcedure.query(async ({ ctx }) => {
+    ...adminManagementProcedures,
+    ...adminSiteContentProcedures,
+    ...adminReportingProcedures,
+    ...adminEvidenceRetentionProcedures,
+    ...adminEmailPolicyProcedures,
+    ...adminPhoneCountryProcedures,
+    pendingVendors: protectedProcedure.input(directorySchema.extend({
+      status: z.enum(["pending", "approved", "rejected", "suspended"]).optional(),
+    }).optional()).query(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
       const db = await getDb();
       if (!db) return [];
@@ -2183,12 +1670,15 @@ export const appRouter = router({
       return db
         .select({
           vendor: vendorProfiles,
-          user: users,
+          user: { id: users.id, name: users.name, email: users.email, status: users.status },
         })
         .from(vendorProfiles)
         .innerJoin(users, eq(vendorProfiles.userId, users.id))
-        .where(eq(vendorProfiles.approvalStatus, "pending"))
-        .orderBy(desc(vendorProfiles.createdAt));
+        .where(and(
+          input?.query ? or(like(vendorProfiles.businessName, `%${input.query.replace(/[\\%_]/g, "\\$&")}%`), like(users.email, `%${input.query.replace(/[\\%_]/g, "\\$&")}%`)) : undefined,
+          input?.status ? eq(vendorProfiles.approvalStatus, input.status) : undefined,
+        ))
+        .orderBy(desc(vendorProfiles.createdAt), desc(vendorProfiles.id)).limit(25).offset(((input?.page ?? 1) - 1) * 25);
     }),
 
     decideVendor: protectedProcedure
@@ -2196,6 +1686,7 @@ export const appRouter = router({
         z.object({
           vendorId: z.number(),
           status: z.enum(["approved", "rejected", "suspended"]),
+          reason: z.string().trim().min(3).max(1000),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -2204,43 +1695,40 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-        await db
-          .update(vendorProfiles)
-          .set({
-            approvalStatus: input.status,
-            approvedAt: input.status === "approved" ? new Date() : null,
-          })
-          .where(eq(vendorProfiles.id, input.vendorId));
-
-        await db.insert(moderationRecords).values({
-          entityType: "vendor",
-          entityId: String(input.vendorId),
-          actorId: ctx.user.id,
-          action: input.status,
-        });
-
-        const [vendor] = await db
-          .select({ userId: vendorProfiles.userId, businessName: vendorProfiles.businessName })
-          .from(vendorProfiles)
-          .where(eq(vendorProfiles.id, input.vendorId))
-          .limit(1);
-        if (vendor && (input.status === "approved" || input.status === "rejected")) {
-          await enqueueNotificationEvent(db, {
-            eventType: input.status === "approved" ? "VENDOR_APPROVED" : "VENDOR_REJECTED",
+        await db.transaction(async tx => {
+          const [reference] = await tx.select().from(vendorProfiles).where(eq(vendorProfiles.id, input.vendorId));
+          if (!reference) throw new TRPCError({ code: "NOT_FOUND", message: "Vendor not found." });
+          if (input.status === "approved") await vendorReady(tx, reference.userId);
+          else await tx.select({ id: users.id }).from(users).where(eq(users.id, reference.userId)).for("update");
+          const [profile] = await tx.select().from(vendorProfiles).where(eq(vendorProfiles.id, input.vendorId)).for("update");
+          if (input.status === "approved") {
+            const [onboarding] = await tx.select().from(accountOnboarding).where(eq(accountOnboarding.userId, profile.userId));
+            if (!onboarding?.completedAt) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The vendor must finish storefront onboarding first." });
+          }
+          await tx.update(vendorProfiles).set({
+            approvalStatus: input.status, approvedAt: input.status === "approved" ? profile.approvedAt ?? new Date() : profile.approvedAt,
+          }).where(eq(vendorProfiles.id, input.vendorId));
+          await tx.insert(moderationRecords).values({
+            entityType: "vendor", entityId: String(input.vendorId), actorId: ctx.user.id,
+            action: input.status === "approved" ? "vendor_reenabled" : "vendor_suspended", reason: input.reason,
+          });
+        if (profile.approvalStatus !== input.status) {
+          await enqueueNotificationEvent(tx, {
+            eventType: input.status === "approved" ? "VENDOR_APPROVED" : input.status === "rejected" ? "VENDOR_REJECTED" : "VENDOR_STATUS_CHANGED",
             idempotencyKey: `vendor_${input.status}:${input.vendorId}:${Date.now()}`,
-            recipientUserId: vendor.userId,
+            recipientUserId: profile.userId,
             actorUserId: ctx.user.id,
             entityType: "vendor",
             entityId: input.vendorId,
             payload: {
               vendorId: input.vendorId,
-              businessName: vendor.businessName,
+              businessName: profile.businessName,
               status: input.status,
               actionUrl: "/vendor",
             },
           });
         }
-
+        });
         return { success: true };
       }),
 
@@ -2252,38 +1740,38 @@ export const appRouter = router({
     }),
 
     saveCategory: protectedProcedure
-      .input(
-        z.object({
-          id: z.number().optional(),
-          name: z.string().min(2).max(160),
-          slug: z.string().min(2).max(128),
-          sortOrder: z.number().int().default(0),
-          isActive: z.boolean().default(true),
-        })
-      )
+      .input(categoryInputSchema)
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role !== "admin")
           throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const { id, ...values } = input;
-        if (id) {
-          await db.update(categories).set(values).where(eq(categories.id, id));
-          return { id, success: true };
-        }
-        const [result] = await db.insert(categories).values(values);
-        return { id: result.insertId, success: true };
+        return db.transaction(async tx => {
+          const all = await tx.select().from(categories).orderBy(categories.id).for("update");
+          if (id && !all.some(row => row.id === id)) throw new TRPCError({ code: "NOT_FOUND", message: "Category not found." });
+          if (all.some(row => row.slug === values.slug && row.id !== id)) throw new TRPCError({ code: "CONFLICT", message: "Category slug already exists." });
+          let categoryId = id;
+          if (categoryId) await tx.update(categories).set(values).where(eq(categories.id, categoryId));
+          else { const [result] = await tx.insert(categories).values(values); categoryId = result.insertId; }
+          await tx.insert(moderationRecords).values({ entityType: "category", entityId: String(categoryId), actorId: ctx.user.id,
+            action: id ? "category_updated" : "category_created", reason: JSON.stringify(values) });
+          return { id: categoryId, success: true };
+        });
       }),
 
-    users: protectedProcedure.query(async ({ ctx }) => {
+    users: protectedProcedure.input(directorySchema.extend({
+      role: z.enum(["buyer", "vendor", "admin"]).optional(),
+      status: z.enum(["active", "suspended"]).optional(),
+    }).optional()).query(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      return getAllUsersForAdmin();
+      return getAllUsersForAdmin(input);
     }),
 
     updateUserStatus: protectedProcedure
       .input(
         z.object({
-          userId: z.number(),
+          userId: z.number().int().positive(),
           status: z.enum(["active", "suspended"]),
         })
       )
@@ -2292,16 +1780,15 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db
-          .update(users)
-          .set({ status: input.status })
-          .where(eq(users.id, input.userId));
+        await setAccountStatus(db, input.userId, input.status, {
+          actorId: ctx.user.id, action: `account_${input.status}`, reason: "Administrator account status update.",
+        });
         return { success: true };
       }),
 
-    listings: protectedProcedure.query(async ({ ctx }) => {
+    listings: protectedProcedure.input(directorySchema.extend({ status: listingStatusSchema.optional() }).optional()).query(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      const allListings = await getAllListingsForAdmin();
+      const allListings = await getAllListingsForAdmin(input);
       return allListings.map(item => ({
         ...item,
         quality: evaluateListingQuality({
@@ -2311,6 +1798,7 @@ export const appRouter = router({
           location: item.listing.location,
           categoryId: item.listing.categoryId,
           vendorApproved: item.vendor.approvalStatus === "approved",
+          mediaCount: item.mediaCount,
         }),
       }));
     }),
@@ -2323,7 +1811,9 @@ export const appRouter = router({
         .select({
           review: reviews,
           listing: listings,
-          buyer: users,
+          buyer: accountSummaryColumns,
+          buyerReviewCountRecent: sql<number>`(select count(*) from reviews recent where recent.buyerId = ${reviews.buyerId} and recent.createdAt between date_sub(${reviews.createdAt}, interval 1 day) and date_add(${reviews.createdAt}, interval 1 day))`,
+          sameCommentCount: sql<number>`case when trim(coalesce(${reviews.comment}, '')) = '' then 0 else (select count(*) from reviews duplicate_review where lower(trim(duplicate_review.comment)) = lower(trim(${reviews.comment}))) end`,
         })
         .from(reviews)
         .innerJoin(listings, eq(reviews.listingId, listings.id))
@@ -2334,6 +1824,8 @@ export const appRouter = router({
         integrity: evaluateReviewIntegrity({
           comment: item.review.comment,
           rating: item.review.rating,
+          buyerReviewCountRecent: Number(item.buyerReviewCountRecent),
+          sameCommentCount: Number(item.sameCommentCount),
         }),
       }));
     }),
@@ -2350,11 +1842,15 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db
+        return db.transaction(async tx => {
+        const [reviewRecord] = await tx.select().from(reviews).where(eq(reviews.id, input.reviewId)).for("update");
+        if (!reviewRecord) throw new TRPCError({ code: "NOT_FOUND", message: "Review not found." });
+        if (reviewRecord.status === input.status) return { success: true, status: input.status };
+        await tx
           .update(reviews)
           .set({ status: input.status })
           .where(eq(reviews.id, input.reviewId));
-        await db.insert(moderationRecords).values({
+        await tx.insert(moderationRecords).values({
           entityType: "review",
           entityId: String(input.reviewId),
           actorId: ctx.user.id,
@@ -2362,13 +1858,8 @@ export const appRouter = router({
           reason: input.reason || null,
         });
 
-        const [reviewRecord] = await db
-          .select({ buyerId: reviews.buyerId, listingId: reviews.listingId })
-          .from(reviews)
-          .where(eq(reviews.id, input.reviewId))
-          .limit(1);
         if (reviewRecord && (input.status === "approved" || input.status === "rejected")) {
-          await enqueueNotificationEvent(db, {
+          await enqueueNotificationEvent(tx, {
             eventType: "REVIEW_MODERATED",
             idempotencyKey: `review_moderated:${input.reviewId}:${input.status}:${Date.now()}`,
             recipientUserId: reviewRecord.buyerId,
@@ -2386,6 +1877,7 @@ export const appRouter = router({
         }
 
         return { success: true, status: input.status };
+        });
       }),
 
     disputes: protectedProcedure.query(async ({ ctx }) => {
@@ -2406,11 +1898,14 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db
+        return db.transaction(async tx => {
+        const [existing] = await tx.select({ id: disputes.id }).from(disputes).where(eq(disputes.id, input.disputeId)).for("update");
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Dispute not found." });
+        await tx
           .update(disputes)
           .set({ status: input.status, resolution: input.resolution })
           .where(eq(disputes.id, input.disputeId));
-        await db.insert(moderationRecords).values({
+        await tx.insert(moderationRecords).values({
           entityType: "dispute",
           entityId: String(input.disputeId),
           actorId: ctx.user.id,
@@ -2418,6 +1913,7 @@ export const appRouter = router({
           reason: input.resolution,
         });
         return { success: true };
+        });
       }),
 
     updateListingStatus: protectedProcedure
@@ -2441,21 +1937,28 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db
+        const result = await db.transaction(async tx => {
+        const [existing] = await tx.select().from(listings).where(eq(listings.id, input.listingId)).for("update");
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Listing not found." });
+        if (existing.status === input.status) return { success: true };
+        await tx
           .update(listings)
           .set({
             status: input.status,
-            publishedAt: input.status === "published" ? new Date() : null,
+            publishedAt: input.status === "published" ? new Date() : existing.publishedAt,
           })
           .where(eq(listings.id, input.listingId));
-        await db.insert(moderationRecords).values({
+        await tx.insert(moderationRecords).values({
           entityType: "listing",
           entityId: String(input.listingId),
           actorId: ctx.user.id,
           action: input.status,
           reason: input.reason,
         });
+        if (input.status === "published") await enqueueListingPublication(tx, input.listingId, ctx.user.id);
         return { success: true };
+        });
+        return result;
       }),
 
     moderation: protectedProcedure.query(async ({ ctx }) => {
@@ -2500,7 +2003,7 @@ export const appRouter = router({
             report: conversationReports,
             inquiry: inquiries,
             listing: listings,
-            reporter: users,
+            reporter: accountSummaryColumns,
           })
           .from(conversationReports)
           .innerJoin(inquiries, eq(conversationReports.inquiryId, inquiries.id))
@@ -2518,7 +2021,7 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) return [];
         return db
-          .select({ message: messages, sender: users })
+          .select({ message: messages, sender: accountSummaryColumns })
           .from(messages)
           .innerJoin(users, eq(messages.senderId, users.id))
           .where(eq(messages.inquiryId, input.inquiryId))
@@ -2533,20 +2036,29 @@ export const appRouter = router({
           resolutionNote: z.string().trim().max(2000).optional(),
           linkedDisputeId: z.number().int().positive().nullable().optional(),
           suspendConversation: z.boolean().default(false),
+          resumeConversation: z.boolean().default(false),
         })
       )
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [report] = await db
+        if (input.suspendConversation && input.resumeConversation) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose restrict or restore, not both." });
+        return db.transaction(async tx => {
+        const [report] = await tx
           .select({ report: conversationReports, inquiry: inquiries })
           .from(conversationReports)
           .innerJoin(inquiries, eq(conversationReports.inquiryId, inquiries.id))
           .where(eq(conversationReports.id, input.reportId))
-          .limit(1);
+          .limit(1).for("update");
         if (!report) throw new TRPCError({ code: "NOT_FOUND", message: "Report not found" });
-        await db
+        if (input.linkedDisputeId) {
+          const [dispute] = await tx.select().from(disputes).where(and(
+            eq(disputes.id, input.linkedDisputeId), eq(disputes.buyerId, report.inquiry.buyerId), eq(disputes.vendorId, report.inquiry.vendorId)
+          ));
+          if (!dispute) throw new TRPCError({ code: "BAD_REQUEST", message: "The linked dispute must belong to this buyer and vendor." });
+        }
+        await tx
           .update(conversationReports)
           .set({
             status: input.status,
@@ -2556,20 +2068,21 @@ export const appRouter = router({
             reviewedAt: new Date(),
           })
           .where(eq(conversationReports.id, input.reportId));
-        if (input.suspendConversation) {
-          await db
+        if (input.suspendConversation || input.resumeConversation) {
+          await tx
             .update(inquiries)
-            .set({ status: "archived", updatedAt: new Date() })
+            .set({ moderatorSuspendedAt: input.suspendConversation ? new Date() : null, updatedAt: new Date() })
             .where(eq(inquiries.id, report.inquiry.id));
         }
-        await db.insert(moderationRecords).values({
+        await tx.insert(moderationRecords).values({
           entityType: "conversation",
           entityId: String(report.inquiry.id),
           actorId: ctx.user.id,
-          action: `report_${input.status}`,
+          action: input.suspendConversation ? "conversation_restricted" : input.resumeConversation ? "conversation_restored" : `report_${input.status}`,
           reason: input.resolutionNote,
         });
         return { success: true };
+        });
       }),
 
     moderateMessage: protectedProcedure
@@ -2584,13 +2097,14 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [message] = await db
+        return db.transaction(async tx => {
+        const [message] = await tx
           .select({ id: messages.id, inquiryId: messages.inquiryId })
           .from(messages)
           .where(eq(messages.id, input.messageId))
-          .limit(1);
+          .limit(1).for("update");
         if (!message) throw new TRPCError({ code: "NOT_FOUND", message: "Message not found" });
-        await db
+        await tx
           .update(messages)
           .set({
             isHidden: input.hidden,
@@ -2599,7 +2113,7 @@ export const appRouter = router({
             hiddenReason: input.hidden ? input.reason || null : null,
           })
           .where(eq(messages.id, input.messageId));
-        await db.insert(moderationRecords).values({
+        await tx.insert(moderationRecords).values({
           entityType: "message",
           entityId: String(input.messageId),
           actorId: ctx.user.id,
@@ -2607,6 +2121,7 @@ export const appRouter = router({
           reason: input.reason,
         });
         return { success: true, inquiryId: message.inquiryId };
+        });
       }),
 
     escalateAccount: protectedProcedure
@@ -2621,18 +2136,24 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db
-          .update(users)
-          .set({ status: input.action === "suspend" ? "suspended" : "active" })
-          .where(eq(users.id, input.userId));
-        await db.insert(moderationRecords).values({
-          entityType: "conversation",
-          entityId: `user:${input.userId}`,
+        await setAccountStatus(db, input.userId, input.action === "suspend" ? "suspended" : "active", {
           actorId: ctx.user.id,
           action: `account_${input.action}`,
           reason: input.reason,
         });
         return { success: true };
+      }),
+
+    requestAccountReset: protectedProcedure.input(z.object({ userId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [account] = await db.select({ email: users.email, status: users.status }).from(users).where(eq(users.id, input.userId));
+        if (!account?.email || account.status !== "active") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "An active account with an email is required." });
+        await enforceAuthRateLimit(db, "reset_email", account.email, 3, 60 * 60_000);
+        await queuePasswordReset(db, account.email, ctx.user.id);
+        return { message: "A recovery link has been queued to the account email. No password or session has been changed." };
       }),
 
     analytics: protectedProcedure
@@ -2666,13 +2187,17 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db
+        await db.transaction(async tx => {
+        await tx
           .insert(systemSettings)
           .values({
             settingKey: input.settingKey,
             booleanValue: input.booleanValue,
           })
           .onDuplicateKeyUpdate({ set: { booleanValue: input.booleanValue } });
+        await tx.insert(moderationRecords).values({ entityType: "site_content", entityId: input.settingKey.slice(0, 64),
+          actorId: ctx.user.id, action: "feature_flag_changed", reason: JSON.stringify(input) });
+        });
         return { success: true };
       }),
 
@@ -2721,28 +2246,19 @@ export const appRouter = router({
       }),
 
     retryNotificationDelivery: protectedProcedure
-      .input(z.object({ deliveryId: z.number().int().positive() }))
+      .input(z.object({
+        deliveryId: z.number().int().positive(),
+        reconciliation: z.object({
+          outcome: z.enum(["sent", "not_sent"]), notes: z.string().trim().min(3).max(1000),
+          providerMessageId: z.string().trim().min(1).max(255).optional(),
+        }).optional(),
+      }))
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [delivery] = await db
-          .select({ id: notificationDeliveries.id, outboxId: notificationDeliveries.outboxId })
-          .from(notificationDeliveries)
-          .where(eq(notificationDeliveries.id, input.deliveryId))
-          .limit(1);
-        if (!delivery) throw new TRPCError({ code: "NOT_FOUND", message: "Delivery not found" });
-        await db
-          .update(notificationDeliveries)
-          .set({ status: "queued", nextAttemptAt: new Date(), failureCode: null, failureReason: null })
-          .where(eq(notificationDeliveries.id, input.deliveryId));
-        if (delivery.outboxId) {
-          await db
-            .update(notificationOutbox)
-            .set({ status: "queued", availableAt: new Date(), lockedAt: null, lockToken: null, leaseExpiresAt: null, lastError: null })
-            .where(eq(notificationOutbox.id, delivery.outboxId));
-        }
-        return { success: true };
+        if (input.reconciliation && !ctx.user.emailVerifiedAt) throw new TRPCError({ code: "FORBIDDEN", message: "A verified administrator is required to reconcile provider outcomes." });
+        return recoverNotificationDelivery(db, ctx.user.id, input.deliveryId, input.reconciliation);
       }),
 
     notificationWebhookEvents: protectedProcedure.query(async ({ ctx }) => {
@@ -2765,18 +2281,27 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [updated] = await db
+        await db.transaction(async tx => {
+        const [job] = await tx.select().from(notificationOutbox).where(eq(notificationOutbox.id, input.outboxId)).for("update");
+        if (!job || !["failed", "dead"].includes(job.status)) throw new TRPCError({ code: "NOT_FOUND", message: "Failed or dead outbox item not found." });
+        const [uncertain] = await tx.select({ id: notificationDeliveries.id }).from(notificationDeliveries).where(and(
+          eq(notificationDeliveries.outboxId, job.id),
+          inArray(notificationDeliveries.failureCode, ["send_in_progress", "send_outcome_unknown"])
+        )).limit(1);
+        if (uncertain) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Use delivery reconciliation after checking the provider. Do not blindly retry an uncertain send." });
+        const [updated] = await tx
           .update(notificationOutbox)
           .set({ status: "queued", availableAt: new Date(), lockedAt: null, lockToken: null, leaseExpiresAt: null, lastError: null })
           .where(and(eq(notificationOutbox.id, input.outboxId), inArray(notificationOutbox.status, ["failed", "dead"] as const)));
         if (!updated || updated.affectedRows === 0) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Failed or dead outbox item not found" });
         }
-        await db.insert(moderationRecords).values({
+        await tx.insert(moderationRecords).values({
           entityType: "notification",
           entityId: String(input.outboxId),
           actorId: ctx.user.id,
           action: "notification_outbox_requeued",
+        });
         });
         return { success: true };
       }),
@@ -2787,19 +2312,21 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [updated] = await db
+        await db.transaction(async tx => {
+        const [updated] = await tx
           .update(notificationSuppressions)
           .set({ active: false, releasedAt: new Date(), releaseReason: input.releaseReason })
           .where(and(eq(notificationSuppressions.id, input.suppressionId), eq(notificationSuppressions.active, true)));
         if (!updated || updated.affectedRows === 0) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Active suppression not found" });
         }
-        await db.insert(moderationRecords).values({
+        await tx.insert(moderationRecords).values({
           entityType: "notification",
           entityId: String(input.suppressionId),
           actorId: ctx.user.id,
           action: "notification_suppression_released",
           reason: input.releaseReason,
+        });
         });
         return { success: true };
       }),
@@ -2818,16 +2345,18 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db
+        await db.transaction(async tx => {
+        await tx
           .insert(systemSettings)
           .values({ settingKey: "email_delivery_paused", booleanValue: input.paused, description: input.reason })
           .onDuplicateKeyUpdate({ set: { booleanValue: input.paused, description: input.reason } });
-        await db.insert(moderationRecords).values({
+        await tx.insert(moderationRecords).values({
           entityType: "notification",
           entityId: "email_delivery",
           actorId: ctx.user.id,
           action: input.paused ? "email_delivery_paused" : "email_delivery_resumed",
           reason: input.reason,
+        });
         });
         return { success: true, paused: input.paused };
       }),
@@ -2840,7 +2369,7 @@ export const appRouter = router({
               .enum(["created", "submitted", "in_review", "approved", "declined", "expired", "abandoned"])
               .optional(),
             countryCode: z.enum(["US", "CA", "MX"]).optional(),
-            provider: z.enum(["veriff", "sumsub", "manual"]).optional(),
+            provider: z.enum(["didit", "veriff", "sumsub", "manual"]).optional(),
             sessionType: z.enum(["identity_document", "liveness", "proof_of_residence", "combined_na_vendor"]).optional(),
             reviewerId: z.number().int().positive().optional(),
           })
@@ -2856,11 +2385,11 @@ export const appRouter = router({
         if (input?.provider) conditions.push(eq(vendorVerificationSessions.provider, input.provider));
         if (input?.sessionType) conditions.push(eq(vendorVerificationSessions.sessionType, input.sessionType));
         if (input?.reviewerId) conditions.push(eq(vendorVerificationSessions.reviewedBy, input.reviewerId));
-        return db
+        const rows = await db
           .select({
             session: vendorVerificationSessions,
             vendor: vendorProfiles,
-            applicant: users,
+            applicant: accountSummaryColumns,
           })
           .from(vendorVerificationSessions)
           .innerJoin(vendorProfiles, eq(vendorVerificationSessions.vendorId, vendorProfiles.id))
@@ -2868,6 +2397,30 @@ export const appRouter = router({
           .where(conditions.length ? and(...conditions) : undefined)
           .orderBy(desc(vendorVerificationSessions.createdAt))
           .limit(100);
+        return Promise.all(
+          rows.map(async row => {
+            const evidence = await db
+              .select()
+              .from(vendorVerificationEvidence)
+              .where(eq(vendorVerificationEvidence.sessionId, row.session.id));
+            const decisions = await db.select().from(vendorVerificationDecisions).where(eq(vendorVerificationDecisions.sessionId, row.session.id));
+            return {
+              ...row,
+              decisions,
+              evidence: await Promise.all(
+                evidence.map(async item => ({
+                  id: item.id,
+                  evidenceType: item.evidenceType,
+                  summary: item.redactedSummary,
+                  expiresAt: item.retentionExpiresAt,
+                  legalHoldAt: item.legalHoldAt,
+                  legalHoldReason: item.legalHoldReason,
+                  signedUrl: !item.deletedAt && item.retentionExpiresAt && item.retentionExpiresAt > new Date() ? await evidenceDownloadUrl(item.id, ctx.user.id) : null,
+                }))
+              ),
+            };
+          })
+        );
       }),
 
     reviewVerificationSession: protectedProcedure
@@ -2875,7 +2428,8 @@ export const appRouter = router({
         z.object({
           sessionId: z.number().int().positive(),
           action: z.enum(["approve", "decline"]),
-          reviewerNotes: z.string().trim().max(2000).optional(),
+          checkType: z.enum(["identity", "residence"]).optional(),
+          reviewerNotes: z.string().trim().max(1000).optional(),
           declinedReason: z.string().trim().max(500).optional(),
           countryCode: z.enum(["US", "CA", "MX"]).optional(),
         })
@@ -2884,57 +2438,17 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [session] = await db
-          .select()
-          .from(vendorVerificationSessions)
-          .where(eq(vendorVerificationSessions.id, input.sessionId))
-          .limit(1);
-        if (!session) throw new TRPCError({ code: "NOT_FOUND", message: "Verification session not found" });
-        const reviewedAt = new Date();
-        const isApproval = input.action === "approve";
-        const status = isApproval ? "approved" : "declined";
-        await db
-          .update(vendorVerificationSessions)
-          .set({
-            status,
-            reviewedBy: ctx.user.id,
-            reviewedAt,
-            reviewerNotes: input.reviewerNotes || null,
-            declinedReason: !isApproval ? input.declinedReason || "Requirements not met" : null,
-            updatedAt: reviewedAt,
-          })
-          .where(eq(vendorVerificationSessions.id, session.id));
-        const country = input.countryCode || (session.countryCode as "US" | "CA" | "MX" | null);
-        await db
-          .update(vendorProfiles)
-          .set({
-            identityStatus: isApproval ? "verified" : "rejected",
-            identityVerifiedAt: isApproval ? reviewedAt : null,
-            residenceStatus: isApproval && country ? "verified" : "rejected",
-            residenceCountry: country || null,
-            residenceVerifiedAt: isApproval && country ? reviewedAt : null,
-            updatedAt: reviewedAt,
-          })
-          .where(eq(vendorProfiles.id, session.vendorId));
-        await db.insert(moderationRecords).values({
-          entityType: "vendor",
-          entityId: String(session.id),
-          actorId: ctx.user.id,
-          action: `verification_${status}`,
-          reason: input.reviewerNotes || input.declinedReason,
-        });
-        return { success: true, status };
+        if (!ctx.user.emailVerifiedAt) throw new TRPCError({ code: "FORBIDDEN", message: "A verified administrator is required." });
+        return reviewManualVerification(db, ctx.user.id, input);
       }),
 
-    leadConversionSummary: protectedProcedure.query(async ({ ctx }) => {
+    leadConversionSummary: protectedProcedure.input(analyticsFilterSchema.optional()).query(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
       const db = await getDb();
       if (!db) return computeLeadFunnel([]);
-      const inqRows = await db.select({ leadStage: inquiries.leadStage }).from(inquiries);
-      return computeLeadFunnel(inqRows.map(r => r.leadStage as LeadStage));
+      return getLeadFunnelAnalytics(input ?? {});
     }),
   }),
 });
 
 export type AppRouter = typeof appRouter;
-import { storagePut } from "./storage";

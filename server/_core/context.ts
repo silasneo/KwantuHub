@@ -11,15 +11,7 @@ export type TrpcContext = {
 export async function createContext(
   opts: CreateExpressContextOptions
 ): Promise<TrpcContext> {
-  let user: User | null = null;
-
-  try {
-    // JWT-only application authentication per the KwantuHub SOW.
-    user = await authenticateFromRequest(opts.req);
-  } catch {
-    // Authentication is optional for public procedures.
-    user = null;
-  }
+  const user = await authenticateFromRequest(opts.req);
 
   return {
     req: opts.req,

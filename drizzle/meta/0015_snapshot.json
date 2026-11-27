@@ -3432,8 +3432,8 @@
         }
       },
       "foreignKeys": {
-        "vendorVerificationEvidence_sessionId_vendorVerificationSessions_id_fk": {
-          "name": "vendorVerificationEvidence_sessionId_vendorVerificationSessions_id_fk",
+        "vendor_verification_evidence_session_fk": {
+          "name": "vendor_verification_evidence_session_fk",
           "tableFrom": "vendorVerificationEvidence",
           "tableTo": "vendorVerificationSessions",
           "columnsFrom": [

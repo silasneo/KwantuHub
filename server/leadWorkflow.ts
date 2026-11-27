@@ -39,7 +39,11 @@ export function computeLeadFunnel(stages: LeadStage[]) {
     if (counts[s] !== undefined) counts[s]++;
   }
 
-  const total = stages.length;
+  return summarizeLeadCounts(counts);
+}
+
+export function summarizeLeadCounts(counts: Record<LeadStage, number>) {
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
   const won = counts.deal_won;
   const conversionRate = total > 0 ? won / total : 0;
 

@@ -59,4 +59,18 @@ describe("Stage 4D saved search matching policy", () => {
       )
     ).toBe(false);
   });
+  it("does not generate matches outside decimal bounds or across currencies", () => {
+    const listing = { ...sampleListing, priceIndication: "USD 50.25-100.75" };
+    expect(matchesSavedSearch({ minPrice: 101 }, listing)).toBe(false);
+    expect(matchesSavedSearch({ maxPrice: 50.24 }, listing)).toBe(false);
+    expect(matchesSavedSearch({ minPrice: 75.5, maxPrice: 80.5 }, listing)).toBe(true);
+    expect(matchesSavedSearch({ minPrice: 50, currency: "CAD" }, listing)).toBe(false);
+    expect(matchesSavedSearch({ minPrice: NaN }, listing)).toBe(false);
+    expect(matchesSavedSearch({ minPrice: 1 }, { ...listing, priceIndication: "Inquire" })).toBe(false);
+  });
+  it("shares the listing-or-vendor remote policy and location matching", () => {
+    expect(matchesSavedSearch({ remoteOnly: true }, { ...sampleListing, remoteAvailable: false, vendorRemoteAvailable: true })).toBe(true);
+    expect(matchesSavedSearch({ location: "toronto" }, sampleListing)).toBe(true);
+    expect(matchesSavedSearch({ location: "Boston" }, sampleListing)).toBe(false);
+  });
 });

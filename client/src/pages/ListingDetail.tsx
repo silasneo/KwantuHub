@@ -1,33 +1,54 @@
-import { useState } from "react";
-import { useRoute, Link } from "wouter";
+import { useEffect, useRef, useState } from "react";
+import { useRoute, useLocation, useSearch, Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { mediaUrl } from "@/lib/storage";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
 import { ListingImageCarousel } from "@/components/ListingImageCarousel";
 import ContactReveal from "@/components/ContactReveal";
-import TurnstileField from "@/components/TurnstileField";
+import TurnstileField, { turnstileConfigured } from "@/components/TurnstileField";
 import { SEOHead } from "@/components/SEOHead";
+import { CollectionPager } from "@/components/CollectionPager";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 
 export default function ListingDetail() {
+  const [, navigate] = useLocation();
   const [, params] = useRoute("/listings/:slug");
   const slug = params?.slug || "";
+  const preview = new URLSearchParams(useSearch()).get("preview") === "1";
 
-  const { isAuthenticated } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const [inquirySubject, setInquirySubject] = useState("");
   const [inquiryMsg, setInquiryMsg] = useState("");
   const [showInquiryModal, setShowInquiryModal] = useState(false);
+  const inquiryTriggerRef = useRef<HTMLButtonElement>(null);
   const [submittedInquiry, setSubmittedInquiry] = useState(false);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
+  const [reviewPage, setReviewPage] = useState(1);
   const [inquiryTurnstileToken, setInquiryTurnstileToken] = useState<string>();
   const [reviewTurnstileToken, setReviewTurnstileToken] = useState<string>();
+  const [inquiryChallengeKey, setInquiryChallengeKey] = useState(0);
+  const [reviewChallengeKey, setReviewChallengeKey] = useState(0);
+  useEffect(() => {
+    const saved = sessionStorage.getItem(`inquiry:${slug}`);
+    if (!saved) return;
+    try {
+      const draft: unknown = JSON.parse(saved);
+      if (draft && typeof draft === "object" && "message" in draft && typeof draft.message === "string") {
+        setInquiryMsg(draft.message);
+        if ("subject" in draft && typeof draft.subject === "string") setInquirySubject(draft.subject);
+        setShowInquiryModal(true);
+      }
+    } catch { sessionStorage.removeItem(`inquiry:${slug}`); }
+  }, [slug]);
 
   const utils = trpc.useUtils();
   const {
     data: item,
     isLoading,
     error,
-  } = trpc.marketplace.getListing.useQuery({ slug }, { enabled: !!slug });
+  } = trpc.marketplace.getListing.useQuery({ slug, preview: preview || undefined }, { enabled: !!slug });
 
   // Fetch related listings based on category and listing ID
   const { data: relatedItems } = trpc.marketplace.getRelated.useQuery(
@@ -39,9 +60,9 @@ export default function ListingDetail() {
     { enabled: !!item?.id && !!item?.categoryId }
   );
 
-  const { data: reviewSummary, isLoading: loadingReviews } =
+  const { data: reviewSummary, isLoading: loadingReviews, error: reviewsError, refetch: refetchReviews } =
     trpc.marketplace.reviews.useQuery(
-      { listingId: item?.id || 0 },
+      { listingId: item?.id || 0, page: reviewPage },
       { enabled: !!item?.id }
     );
 
@@ -49,8 +70,10 @@ export default function ListingDetail() {
     onSuccess: () => {
       setSubmittedInquiry(true);
       setShowInquiryModal(false);
+      sessionStorage.removeItem(`inquiry:${slug}`);
       utils.buyer.inquiries.invalidate();
     },
+    onSettled: () => { setInquiryTurnstileToken(undefined); setInquiryChallengeKey(key => key + 1); },
   });
 
   const toggleWishlistMutation = trpc.buyer.toggleWishlist.useMutation({
@@ -64,6 +87,7 @@ export default function ListingDetail() {
       utils.buyer.reviews.invalidate();
       utils.marketplace.reviews.invalidate({ listingId: item?.id || 0 });
     },
+    onSettled: () => { setReviewTurnstileToken(undefined); setReviewChallengeKey(key => key + 1); },
   });
 
   if (isLoading) {
@@ -81,6 +105,7 @@ export default function ListingDetail() {
   if (error || !item) {
     return (
       <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
+        <SEOHead title="Listing not found" noindex />
         <SiteHeader />
         <main className="flex-1 max-w-6xl mx-auto px-4 py-20 text-center">
           <h2 className="text-3xl font-serif font-bold text-[#0a0a0a] mb-4">
@@ -105,6 +130,8 @@ export default function ListingDetail() {
         description={item.description?.slice(0, 160) || `Handcrafted diaspora ${item.listingType} on KwantuHub.`}
         canonicalPath={`/listings/${item.slug}`}
         ogType="product"
+        image={item.media[0] ? mediaUrl(item.media[0].storageKey || item.media[0].url) : undefined}
+        noindex={preview}
         jsonLd={{
           "@context": "https://schema.org",
           "@type": item.listingType === "service" ? "Service" : "Product",
@@ -127,6 +154,11 @@ export default function ListingDetail() {
       <SiteHeader />
 
       <main className="flex-1 max-w-6xl mx-auto px-4 sm:px-8 py-12 w-full">
+        {preview && <div role="status" className="mb-6 p-4 border border-amber-300 bg-amber-50">
+          Private owner/administrator preview. This does not publish the listing or make it eligible for discovery.
+          <Link href="/vendor?tab=listings" className="underline ml-2">Manage listing</Link>
+        </div>}
+        {toggleWishlistMutation.error && <p role="alert" className="form-error mb-4">{toggleWishlistMutation.error.message}</p>}
         {/* Breadcrumb */}
         <div className="mb-6 text-xs font-serif uppercase tracking-wider text-[#68635c] flex items-center gap-2">
           <Link href="/marketplace" className="hover:text-[#0a0a0a]">
@@ -164,7 +196,8 @@ export default function ListingDetail() {
                 {isAuthenticated && (
                   <button
                     onClick={() =>
-                      toggleWishlistMutation.mutate({ listingId: item.id })
+                      user?.emailVerifiedAt ? toggleWishlistMutation.mutate({ listingId: item.id }) :
+                        navigate(`/verify-account?next=${encodeURIComponent(`/listings/${slug}`)}`)
                     }
                     className="text-xs font-serif font-bold uppercase tracking-wider text-[#68635c] hover:text-[#d71466] border border-[#d9d0c4] px-3 py-1.5 rounded transition cursor-pointer"
                   >
@@ -196,7 +229,7 @@ export default function ListingDetail() {
                 </div>
                 {item.vendor.storefront && (
                   <Link
-                    href={`/vendors/${item.vendor.storefront.slug}`}
+                    href={`/vendors/${item.vendor.storefront.slug}${preview ? "?preview=1" : ""}`}
                     className="text-xs font-serif font-bold uppercase tracking-wider text-[#d71466] hover:underline"
                   >
                     Visit Storefront →
@@ -223,6 +256,7 @@ export default function ListingDetail() {
                 </div>
               ) : (
                 <button
+                  ref={inquiryTriggerRef}
                   onClick={() => setShowInquiryModal(true)}
                   className="w-full text-center text-xs font-serif font-bold uppercase tracking-widest text-white brand-gradient py-4 rounded hover:opacity-95 transition cursor-pointer shadow-md"
                 >
@@ -246,7 +280,8 @@ export default function ListingDetail() {
               <p className="text-xs text-[#68635c]">{reviewSummary?.reviewCount || 0} approved reviews</p>
             </div>
           </div>
-          {loadingReviews ? (
+          <CollectionPager pagination={reviewSummary?.pagination} onPage={setReviewPage} label="Listing reviews" />
+          {reviewsError ? <p role="alert">{reviewsError.message} <button type="button" onClick={() => refetchReviews()}>Retry</button></p> : loadingReviews ? (
             <p className="font-serif text-[#68635c]">Loading reviews…</p>
           ) : (reviewSummary?.reviews.length || 0) === 0 ? (
             <p className="bg-white border border-[#d9d0c4] rounded p-6 font-serif text-[#68635c]">Be the first buyer to share feedback on this offering.</p>
@@ -282,8 +317,9 @@ export default function ListingDetail() {
                 </select>
               </div>
               <textarea value={reviewComment} onChange={event => setReviewComment(event.target.value)} rows={4} maxLength={2000} placeholder="What should other buyers know?" className="w-full border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0] font-serif text-sm" />
-              <TurnstileField action="submit_review" onToken={setReviewTurnstileToken} />
-              <button type="submit" disabled={submitReviewMutation.isPending} className="mt-4 text-xs font-bold uppercase tracking-wider text-white brand-gradient px-5 py-3 rounded disabled:opacity-50">
+              <p className="text-sm">Reviews require a verified email and a prior inquiry to this vendor. No phone verification or purchase is required.</p>
+              <TurnstileField key={reviewChallengeKey} action="submit_review" onToken={setReviewTurnstileToken} />
+              <button type="submit" disabled={submitReviewMutation.isPending || (turnstileConfigured && !reviewTurnstileToken)} className="mt-4 text-xs font-bold uppercase tracking-wider text-white brand-gradient px-5 py-3 rounded disabled:opacity-50">
                 {submitReviewMutation.isPending ? "Submitting…" : "Submit review"}
               </button>
               {submitReviewMutation.error && <p className="form-error mt-3">{submitReviewMutation.error.message}</p>}
@@ -317,7 +353,7 @@ export default function ListingDetail() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
               {relatedItems.map(rel => {
-                const coverImage = rel.media?.[0]?.url;
+                const coverImage = mediaUrl(rel.media?.[0]?.storageKey || rel.media?.[0]?.url);
                 return (
                   <Link
                     key={rel.id}
@@ -374,23 +410,25 @@ export default function ListingDetail() {
       </main>
 
       {/* Inquiry Modal */}
-      {showInquiryModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded max-w-lg w-full p-6 border border-[#d9d0c4] shadow-xl">
-            <h3 className="font-serif font-bold text-2xl text-[#0a0a0a] mb-2">
+      <Dialog open={showInquiryModal} onOpenChange={setShowInquiryModal}>
+          <DialogContent className="bg-white max-h-[90vh] overflow-y-auto" onCloseAutoFocus={event => {
+            if (inquiryTriggerRef.current) { event.preventDefault(); inquiryTriggerRef.current.focus(); }
+          }}>
+            <DialogTitle className="font-serif font-bold text-2xl text-[#0a0a0a] mb-2">
               Inquire about {item.title}
-            </h3>
-            <p className="text-xs font-serif text-[#68635c] mb-6">
+            </DialogTitle>
+            <DialogDescription className="text-xs font-serif text-[#68635c] mb-6">
               Send a direct message to {item.vendor.businessName}. You can track
               this conversation in your account.
-            </p>
+            </DialogDescription>
 
             <div className="space-y-4">
               <div>
-                <label className="text-[11px] font-serif font-bold uppercase tracking-wider text-[#68635c] block mb-1">
+                <label htmlFor="inquiry-subject" className="text-[11px] font-serif font-bold uppercase tracking-wider text-[#68635c] block mb-1">
                   Subject
                 </label>
                 <input
+                  id="inquiry-subject"
                   type="text"
                   value={inquirySubject || `Inquiry regarding ${item.title}`}
                   onChange={e => setInquirySubject(e.target.value)}
@@ -399,10 +437,11 @@ export default function ListingDetail() {
               </div>
 
               <div>
-                <label className="text-[11px] font-serif font-bold uppercase tracking-wider text-[#68635c] block mb-1">
+                <label htmlFor="inquiry-message" className="text-[11px] font-serif font-bold uppercase tracking-wider text-[#68635c] block mb-1">
                   Your Message
                 </label>
                 <textarea
+                  id="inquiry-message"
                   rows={4}
                   value={inquiryMsg}
                   onChange={e => setInquiryMsg(e.target.value)}
@@ -411,7 +450,13 @@ export default function ListingDetail() {
                 />
               </div>
 
-              <TurnstileField action="create_inquiry" onToken={setInquiryTurnstileToken} />
+              <TurnstileField key={inquiryChallengeKey} action="create_inquiry" onToken={setInquiryTurnstileToken} />
+              {createInquiryMutation.error && <div role="alert" className="form-error">
+                <p>{createInquiryMutation.error.message}</p>
+                {!user?.emailVerifiedAt && <Link className="underline" href={`/${isAuthenticated ? "verify-account" : "login"}?next=${encodeURIComponent(`/listings/${slug}`)}`} onClick={() => {
+                  sessionStorage.setItem(`inquiry:${slug}`, JSON.stringify({ subject: inquirySubject, message: inquiryMsg }));
+                }}>{isAuthenticated ? "Verify your email" : "Sign in or create an account"} and return to this draft</Link>}
+              </div>}
               <div className="flex justify-end gap-3 pt-4 border-t border-[#eee8df]">
                 <button
                   onClick={() => setShowInquiryModal(false)}
@@ -430,7 +475,7 @@ export default function ListingDetail() {
                       turnstileToken: inquiryTurnstileToken,
                     });
                   }}
-                  disabled={createInquiryMutation.isPending || !inquiryMsg}
+                  disabled={createInquiryMutation.isPending || !inquiryMsg || (turnstileConfigured && !inquiryTurnstileToken)}
                   className="text-xs font-serif font-bold uppercase tracking-wider text-white brand-gradient px-6 py-2 rounded hover:opacity-95 disabled:opacity-50 cursor-pointer"
                 >
                   {createInquiryMutation.isPending
@@ -439,9 +484,8 @@ export default function ListingDetail() {
                 </button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          </DialogContent>
+      </Dialog>
 
       <SiteFooter />
     </div>

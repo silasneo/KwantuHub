@@ -16,9 +16,10 @@ type NotificationCenterProps = {
 
 export function NotificationCenter({ mode = "popover" }: NotificationCenterProps) {
   const [open, setOpen] = useState(false);
+  const [cursors, setCursors] = useState<number[]>([]);
   const utils = trpc.useUtils();
-  const { data, isLoading } = trpc.notifications.list.useQuery(
-    { limit: mode === "panel" ? 20 : 5 },
+  const { data, isLoading, error, refetch } = trpc.notifications.list.useQuery(
+    { limit: mode === "panel" ? 20 : 5, cursor: cursors.at(-1) },
     { refetchInterval: 30_000 }
   );
   const markRead = trpc.notifications.markRead.useMutation({
@@ -53,7 +54,7 @@ export function NotificationCenter({ mode = "popover" }: NotificationCenterProps
         )}
       </div>
       <div className={mode === "panel" ? "divide-y divide-[#eee8df]" : "max-h-[24rem] overflow-y-auto divide-y divide-[#eee8df]"}>
-        {isLoading ? (
+        {error ? <p role="alert" className="p-4">{error.message} <button type="button" onClick={() => refetch()}>Retry</button></p> : isLoading ? (
           <p className="px-4 py-8 text-center font-serif text-sm text-[#68635c]">Loading updates...</p>
         ) : !data?.items.length ? (
           <p className="px-4 py-8 text-center font-serif text-sm text-[#68635c]">You are all caught up.</p>
@@ -95,6 +96,13 @@ export function NotificationCenter({ mode = "popover" }: NotificationCenterProps
           ))
         )}
       </div>
+      <nav aria-label="Notification pagination" className="flex justify-between gap-3 p-4 text-sm">
+        <button type="button" disabled={!cursors.length || isLoading} onClick={() => setCursors(value => value.slice(0, -1))}>Newer</button>
+        <span aria-live="polite">Page {cursors.length + 1}</span>
+        <button type="button" disabled={!data?.nextCursor || isLoading} onClick={() => {
+          if (data?.nextCursor) setCursors(value => [...value, data.nextCursor!]);
+        }}>Older</button>
+      </nav>
     </div>
   );
 

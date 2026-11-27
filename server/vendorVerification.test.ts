@@ -23,6 +23,10 @@ describe("Stage 4B vendor identity and residence verification policy", () => {
       residenceStatus: "verified",
       residenceCountry: "CA",
       approvalStatus: "approved",
+      approvalAt: new Date("2026-01-01"),
+      identityVerifiedAt: new Date("2026-01-01"),
+      residenceVerifiedAt: new Date("2026-01-02"),
+      expiresAt: new Date("2099-01-01"),
     });
 
     expect(badges.contactVerified).toBe(true);
@@ -41,6 +45,9 @@ describe("Stage 4B vendor identity and residence verification policy", () => {
       residenceStatus: "verified",
       residenceCountry: "DE",
       approvalStatus: "approved",
+      identityVerifiedAt: new Date("2026-01-01"),
+      residenceVerifiedAt: new Date("2026-01-02"),
+      expiresAt: new Date("2099-01-01"),
     });
 
     expect(badges.identityVerified).toBe(true);
@@ -48,8 +55,40 @@ describe("Stage 4B vendor identity and residence verification policy", () => {
     expect(badges.countryCode).toBeNull();
   });
 
+  it("does not mint verification timestamps from status flags and expires independent checks", () => {
+    const input = {
+      emailVerified: false,
+      phoneVerified: false,
+      identityStatus: "verified",
+      residenceStatus: "verified",
+      residenceCountry: "CA",
+      approvalStatus: "approved",
+    };
+    expect(deriveVendorBadges(input)).toMatchObject({
+      identityVerified: false,
+      residenceVerified: false,
+      issuedAt: null,
+      kwantuApproved: false,
+    });
+    const badges = deriveVendorBadges({
+      ...input,
+      identityVerifiedAt: "2026-01-01",
+      identityExpiresAt: "2026-01-02",
+      residenceVerifiedAt: "2026-01-03",
+      residenceExpiresAt: "2099-01-01",
+    });
+    expect(badges).toMatchObject({
+      identityVerified: false,
+      residenceVerified: true,
+      issuedAt: new Date("2026-01-03").toISOString(),
+    });
+  });
+
   it("masks and categorizes uploaded evidence summaries safely without raw paths", () => {
-    const summary = sanitizeEvidenceSummary("lease_scan_2026.pdf", "lease_agreement");
+    const summary = sanitizeEvidenceSummary(
+      "lease_scan_2026.pdf",
+      "lease_agreement"
+    );
     expect(summary).toBe("LEASE AGREEMENT [.pdf]");
     expect(summary).not.toContain("lease_scan_2026");
   });

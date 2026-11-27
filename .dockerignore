@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.*
+node_modules
+dist
+coverage
+docs/s3-migration-bundle
+docs/s3-assets-export
+attached_assets
+*.log
+data/runtime

@@ -12,17 +12,25 @@ export type AggregateReportRow = {
 };
 
 export function generateAggregateCsv(rows: AggregateReportRow[]): string {
+  if (rows.some(row => !Number.isFinite(row.value)))
+    throw new Error("Aggregate report contains a non-finite metric.");
+  const cell = (value: string) => {
+    const safe = /^\s*[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
   const header = "Domain,Metric,Value,Rate,Note\n";
   const body = rows
     .map(
       r =>
-        `"${r.domain}","${r.metric}",${r.value},"${r.rate || "N/A"}","${r.note.replace(/"/g, '""')}"`
+        `${cell(r.domain)},${cell(r.metric)},${r.value},${cell(r.rate || "N/A")},${cell(r.note)}`
     )
     .join("\n");
   return header + body;
 }
 
-export function sanitizeReportOutput<T extends Record<string, any>>(data: T): Partial<T> {
+export function sanitizeReportOutput<T extends Record<string, any>>(
+  data: T
+): Partial<T> {
   const sanitized = { ...data };
   // Strictly delete any sensitive fields
   delete sanitized.vendorPrivateNotes;

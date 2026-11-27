@@ -18,7 +18,7 @@ function mockContext(user: User | null): TrpcContext {
   };
 }
 
-describe("Stage 4H comprehensive SOW role-based acceptance matrix", () => {
+describe.skipIf(!process.env.DATABASE_URL)("Stage 4H comprehensive SOW role-based acceptance matrix", () => {
   const buyerUser: User = {
     id: 101,
     openId: "buyer-101",
@@ -29,6 +29,7 @@ describe("Stage 4H comprehensive SOW role-based acceptance matrix", () => {
     createdAt: new Date(),
     updatedAt: new Date(),
     lastSignedIn: new Date(),
+    emailVerifiedAt: new Date(),
   };
 
   const adminUser: User = {
@@ -41,6 +42,7 @@ describe("Stage 4H comprehensive SOW role-based acceptance matrix", () => {
     createdAt: new Date(),
     updatedAt: new Date(),
     lastSignedIn: new Date(),
+    emailVerifiedAt: new Date(),
   };
 
   it("Buyer flow: unauthenticated discovery, wishlist gating, inquiry access, and review guards", async () => {
@@ -53,7 +55,7 @@ describe("Stage 4H comprehensive SOW role-based acceptance matrix", () => {
 
     const buyer = appRouter.createCaller(mockContext(buyerUser));
     const savedSearches = await buyer.buyer.savedSearches();
-    expect(Array.isArray(savedSearches)).toBe(true);
+    expect(Array.isArray(savedSearches.items)).toBe(true);
 
     // Submitting reviews requires verified contact status and valid parameters.
     await expect(

@@ -1,11 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { mountTurnstileWidget, type TurnstileApi } from "@/lib/turnstile";
 
 const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined;
 
-type TurnstileApi = {
-  render: (element: HTMLElement, options: { sitekey: string; action?: string; callback?: (token: string) => void; "expired-callback"?: () => void; "error-callback"?: () => void }) => string;
-  reset: (widgetId?: string) => void;
-};
+export const turnstileConfigured = Boolean(siteKey);
 
 declare global {
   interface Window {
@@ -21,40 +19,43 @@ export default function TurnstileField({
   onToken: (token: string | undefined) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const widgetId = useRef<string | undefined>(undefined);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     if (!siteKey || !containerRef.current) return;
+    let disposed = false;
+    let removeWidget: (() => void) | undefined;
     const render = () => {
-      if (!containerRef.current || !window.turnstile) return;
-      containerRef.current.replaceChildren();
-      widgetId.current = window.turnstile.render(containerRef.current, {
-        sitekey: siteKey,
-        action,
-        callback: token => onToken(token),
-        "expired-callback": () => onToken(undefined),
-        "error-callback": () => onToken(undefined),
-      });
+      if (disposed || removeWidget || !containerRef.current || !window.turnstile) return;
+      removeWidget = mountTurnstileWidget(window.turnstile, containerRef.current, siteKey, action, onToken);
     };
+    const failed = () => { if (!disposed) { setLoadError(true); onToken(undefined); } };
+    let script = document.querySelector<HTMLScriptElement>('script[data-kwantu-turnstile="true"]');
     if (window.turnstile) render();
     else {
-      const existing = document.querySelector('script[data-kwantu-turnstile="true"]');
-      if (!existing) {
-        const script = document.createElement("script");
+      if (!script) {
+        script = document.createElement("script");
         script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
         script.async = true;
         script.defer = true;
         script.dataset.kwantuTurnstile = "true";
         script.addEventListener("load", render);
+        script.addEventListener("error", failed);
         document.head.appendChild(script);
-      } else existing.addEventListener("load", render);
+      } else {
+        script.addEventListener("load", render);
+        script.addEventListener("error", failed);
+      }
     }
     return () => {
-      if (widgetId.current && window.turnstile) window.turnstile.reset(widgetId.current);
-      onToken(undefined);
+      disposed = true;
+      script?.removeEventListener("load", render);
+      script?.removeEventListener("error", failed);
+      if (removeWidget) removeWidget(); else onToken(undefined);
     };
   }, [action, onToken]);
 
   if (!siteKey) return null;
-  return <div ref={containerRef} className="my-3 min-h-[65px]" aria-label="Bot protection" />;
+  return <><div ref={containerRef} className="my-3 min-h-[65px]" aria-label="Bot protection" />
+    {loadError && <p role="alert" className="form-error">Bot protection could not load. Check your connection or content blocker, then reload this page and try again.</p>}</>;
 }

@@ -1,9 +1,14 @@
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { mediaUrl } from "@/lib/storage";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
+import { useState } from "react";
+import { CollectionPager } from "@/components/CollectionPager";
 
 export default function VendorDirectory() {
-  const { data: vendors, isLoading } = trpc.vendors.list.useQuery();
+  const [page, setPage] = useState(1);
+  const { data, isLoading, error, refetch } = trpc.vendors.list.useQuery({ page });
+  const vendors = data?.items;
 
   return (
     <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
@@ -24,7 +29,8 @@ export default function VendorDirectory() {
           </p>
         </div>
 
-        {isLoading ? (
+        <CollectionPager pagination={data?.pagination} onPage={setPage} label="Vendors" />
+        {error ? <p role="alert">{error.message} <button type="button" onClick={() => refetch()}>Retry</button></p> : isLoading ? (
           <div className="text-center py-20 text-[#68635c] font-serif text-lg">
             Loading diaspora creators...
           </div>
@@ -58,13 +64,14 @@ export default function VendorDirectory() {
                   <div>
                     {/* Media preview */}
                     <div className="h-48 bg-[#0a0a0a] relative overflow-hidden">
-                      {v.storefront?.coverUrl || v.storefront?.logoUrl ? (
+                      {v.storefront?.coverStorageKey || v.storefront?.coverUrl || v.storefront?.logoStorageKey || v.storefront?.logoUrl ? (
                         <img
-                          src={
-                            v.storefront?.coverUrl ||
-                            v.storefront?.logoUrl ||
-                            ""
-                          }
+                          src={mediaUrl(
+                            v.storefront?.coverStorageKey ||
+                              v.storefront?.coverUrl ||
+                              v.storefront?.logoStorageKey ||
+                              v.storefront?.logoUrl
+                          )}
                           alt={v.businessName}
                           className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
                         />

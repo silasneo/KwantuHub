@@ -30,8 +30,8 @@ describe("Stage 4H live REST role and privacy acceptance", () => {
     const response = await request("/api/v1/buyer/inquiries", { headers: { Cookie: cookie } });
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("success");
-    expect(Array.isArray(response.body.data)).toBe(true);
-    for (const inquiry of response.body.data) {
+    expect(Array.isArray(response.body.data.items)).toBe(true);
+    for (const inquiry of response.body.data.items) {
       expect(inquiry.vendor?.contactEmail).toBeUndefined();
       expect(inquiry.vendor?.phone).toBeUndefined();
       expect(inquiry.vendor?.whatsapp).toBeUndefined();
@@ -71,7 +71,7 @@ describe("Stage 4H live REST role and privacy acceptance", () => {
     const response = await request("/api/v1/vendors");
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("success");
-    for (const vendor of response.body.data) {
+    for (const vendor of response.body.data.items) {
       expect(vendor.approvalStatus).toBe("approved");
       expect(vendor.contactEmail).toBeUndefined();
       expect(vendor.phone).toBeUndefined();
@@ -144,7 +144,8 @@ describe("Stage 4H live REST role and privacy acceptance", () => {
   it("returns a standardized 429 envelope after repeated contact-reveal attempts", async () => {
     const buyerCookie = await login("demo.buyer@kwantuhub.local");
     let lastResponse: JsonResponse | undefined;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    // Public reveals are limited to 30 per IP per minute; keep going until the limiter responds.
+    for (let attempt = 0; attempt < 32 && lastResponse?.status !== 429; attempt += 1) {
       lastResponse = await request("/api/v1/marketplace/revealContact", {
         method: "POST",
         headers: { Cookie: buyerCookie },
@@ -155,7 +156,7 @@ describe("Stage 4H live REST role and privacy acceptance", () => {
     expect(lastResponse?.status).toBe(429);
     expect(lastResponse?.body.status).toBe("error");
     expect(lastResponse?.body.error.code).toBe("TOO_MANY_REQUESTS");
-  });
+  }, 30_000);
 
   it("returns ownership-safe 404/403 envelopes for cross-role resources", async () => {
     const buyerCookie = await login("demo.buyer@kwantuhub.local");

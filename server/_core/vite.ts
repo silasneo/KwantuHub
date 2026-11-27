@@ -5,6 +5,44 @@ import { nanoid } from "nanoid";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import viteConfig from "../../vite.config";
+import { renderPageMetadata, resolvePageMetadata } from "../seoService";
+import type { Request, Response } from "express";
+
+export async function sendSpaPage(
+  req: Request,
+  res: Response,
+  template: string
+) {
+  try {
+    const metadata = await resolvePageMetadata(
+      req.originalUrl.split("?")[0],
+      req.query.preview !== undefined
+    );
+    res.setHeader("Cache-Control", "no-store");
+    if (metadata.redirect)
+      return res.redirect(
+        metadata.status,
+        metadata.redirect +
+          (req.query.preview !== undefined ? "?preview=1" : "")
+      );
+    if (metadata.noindex) res.setHeader("X-Robots-Tag", "noindex, nofollow");
+    if (metadata.status === 503) res.setHeader("Retry-After", "60");
+    return res
+      .status(metadata.status)
+      .type("html")
+      .send(renderPageMetadata(template, metadata));
+  } catch {
+    return res
+      .status(503)
+      .set({
+        "X-Robots-Tag": "noindex, nofollow",
+        "Cache-Control": "no-store",
+        "Retry-After": "60",
+      })
+      .type("text")
+      .send("Page temporarily unavailable.");
+  }
+}
 
 export async function setupVite(app: Express, server: Server) {
   const serverOptions = {
@@ -39,7 +77,7 @@ export async function setupVite(app: Express, server: Server) {
         `src="/src/main.tsx?v=${nanoid()}"`
       );
       const page = await vite.transformIndexHtml(url, template);
-      res.status(200).set({ "Content-Type": "text/html" }).end(page);
+      await sendSpaPage(req, res, page);
     } catch (e) {
       vite.ssrFixStacktrace(e as Error);
       next(e);
@@ -58,10 +96,22 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use(express.static(distPath));
+  const assets = express.static(distPath, { index: false });
+  app.use((req, res, next) => {
+    if (/\.html$/i.test(req.path)) return next();
+    return assets(req, res, next);
+  });
 
   // fall through to index.html if the file doesn't exist
-  app.use("*", (_req, res) => {
-    res.sendFile(path.resolve(distPath, "index.html"));
+  app.get("*", async (req, res, next) => {
+    try {
+      const template = await fs.promises.readFile(
+        path.resolve(distPath, "index.html"),
+        "utf-8"
+      );
+      await sendSpaPage(req, res, template);
+    } catch (error) {
+      next(error);
+    }
   });
 }

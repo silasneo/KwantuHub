@@ -28,6 +28,7 @@ async function twilioRequest(config: TwilioConfig, path: string, body: Record<st
       "content-type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams(body),
+    signal: AbortSignal.timeout(10_000),
   });
   const payload = (await response.json()) as { message?: string; status?: string; sid?: string };
   if (!response.ok) throw new Error(payload.message || `Twilio Verify failed (${response.status})`);
@@ -37,7 +38,9 @@ async function twilioRequest(config: TwilioConfig, path: string, body: Record<st
 export async function startPhoneVerification(phone: string) {
   const config = getTwilioVerifyConfig();
   if (!isTwilioVerifyConfigured(config)) throw new Error("Phone verification is not configured");
-  return twilioRequest(config, "/Verifications", { To: phone, Channel: "sms" });
+  const result = await twilioRequest(config, "/Verifications", { To: phone, Channel: "sms" });
+  if (result.status !== "pending") throw new Error("Twilio did not accept the SMS verification request.");
+  return result;
 }
 
 export async function checkPhoneVerification(phone: string, code: string) {

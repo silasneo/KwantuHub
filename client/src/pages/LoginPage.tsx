@@ -2,255 +2,110 @@ import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
-import TurnstileField from "@/components/TurnstileField";
+import TurnstileField, { turnstileConfigured } from "@/components/TurnstileField";
+import { AuthCard, authField, authLabel, authLink } from "@/components/AuthCard";
+
+export function accountReturnPath() {
+  const next = new URLSearchParams(window.location.search).get("next") || "/account";
+  return next.startsWith("/") && !next.startsWith("//") && !next.includes("\\") && !/^\/(?:login|reset-password|verify-account)(?:[/?#]|$)/.test(next)
+    ? next : "/account";
+}
 
 export default function LoginPage() {
-  const [, setLocation] = useLocation();
-  const [mode, setMode] = useState<"login" | "register">("login");
-
-  // Form states
+  const [, navigate] = useLocation();
+  const [mode, setMode] = useState<"login" | "register" | "forgot">(
+    new URLSearchParams(window.location.search).get("mode") === "register" ? "register" : "login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const [role, setRole] = useState<"buyer" | "vendor">("buyer");
-  const [errorMsg, setErrorMsg] = useState("");
-  const [turnstileToken, setTurnstileToken] = useState<string>();
-
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [role, setRole] = useState<"buyer" | "vendor">(
+    new URLSearchParams(window.location.search).get("role") === "vendor" ? "vendor" : "buyer");
+  const [terms, setTerms] = useState(false);
+  const [token, setToken] = useState<string>();
+  const [challengeKey, setChallengeKey] = useState(0);
+  const [error, setError] = useState("");
   const utils = trpc.useUtils();
-
-  const loginMutation = trpc.auth.login.useMutation({
+  const pending = trpc.auth.registrationStatus.useQuery();
+  const renew = () => { setToken(undefined); setChallengeKey(key => key + 1); };
+  const login = trpc.auth.login.useMutation({
     onSuccess: data => {
-      utils.auth.me.setData(undefined, data.user as any);
+      utils.auth.me.setData(undefined, data.user);
       utils.auth.me.invalidate();
-      if (data.user.role === "admin") {
-        setLocation("/admin");
-      } else if (data.user.role === "vendor") {
-        setLocation("/vendor");
-      } else {
-        setLocation("/account");
-      }
-    },
-    onError: err => {
-      setErrorMsg(
-        err.message || "Failed to sign in. Please verify your credentials."
-      );
+      const next = accountReturnPath();
+      if (!data.user.emailVerifiedAt) navigate(`/verify-account?next=${encodeURIComponent(next)}`);
+      else if (data.user.role === "admin") navigate("/admin");
+      else if (data.user.signupIntent === "vendor" && data.user.role !== "vendor") navigate("/vendor/onboarding");
+      else navigate(next !== "/account" ? next : data.user.role === "vendor" ? "/vendor" : "/account");
     },
   });
-
-  const registerMutation = trpc.auth.register.useMutation({
-    onSuccess: data => {
-      utils.auth.me.setData(undefined, data.user as any);
-      utils.auth.me.invalidate();
-      if (data.user.role === "vendor") {
-        setLocation("/vendor/onboarding");
-      } else {
-        setLocation("/marketplace");
-      }
+  const register = trpc.auth.register.useMutation({
+    onSuccess: () => {
+      utils.auth.registrationStatus.invalidate();
+      const next = role === "vendor" ? "/vendor/onboarding" : accountReturnPath();
+      navigate(`/verify-account?next=${encodeURIComponent(next)}`);
     },
-    onError: err => {
-      setErrorMsg(err.message || "Failed to register. Please try again.");
-    },
+    onSettled: renew,
   });
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg("");
-
-    if (mode === "login") {
-      loginMutation.mutate({ email, password });
-    } else {
-      registerMutation.mutate({ name, email, password, role, turnstileToken });
-    }
+  const forgot = trpc.auth.requestPasswordReset.useMutation({ onSettled: renew });
+  const busy = login.isPending || register.isPending || forgot.isPending;
+  const failure = error || login.error?.message || register.error?.message || forgot.error?.message;
+  const fieldClass = authField;
+  const labelClass = authLabel;
+  const linkClass = authLink;
+  const switchMode = (value: "login" | "register" | "forgot") => {
+    setMode(value); setError(""); login.reset(); register.reset(); forgot.reset(); renew();
   };
-
-  const fillDemo = (demoEmail: string) => {
-    setEmail(demoEmail);
-    setPassword("DemoPass123!");
-    setMode("login");
-  };
-
-  return (
-    <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
-      <SiteHeader />
-
-      <main className="flex-1 flex items-center justify-center p-4 sm:p-8">
-        <div className="bg-white border border-[#d9d0c4] p-8 sm:p-10 rounded max-w-md w-full shadow-xs">
-          <div className="text-center mb-8">
-            <img
-              src="/manus-storage/Kwantu-identity_fc192da7.svg"
-              alt="KwantuHub"
-              className="h-10 w-auto mx-auto mb-4 object-contain"
-            />
-            <h2 className="text-3xl font-serif font-bold text-[#0a0a0a]">
-              {mode === "login" ? "Sign in to KwantuHub" : "Join the Community"}
-            </h2>
-            <p className="text-xs text-[#68635c] font-serif mt-1">
-              Scoped JWT Authentication per approved SOW
-            </p>
-          </div>
-
-          {/* Tab Switcher */}
-          <div className="flex border-b border-[#d9d0c4] mb-6">
-            <button
-              type="button"
-              onClick={() => {
-                setMode("login");
-                setErrorMsg("");
-              }}
-              className={`flex-1 pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
-                mode === "login"
-                  ? "border-[#d71466] text-[#d71466]"
-                  : "border-transparent text-[#68635c]"
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode("register");
-                setErrorMsg("");
-              }}
-              className={`flex-1 pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
-                mode === "register"
-                  ? "border-[#d71466] text-[#d71466]"
-                  : "border-transparent text-[#68635c]"
-              }`}
-            >
-              Register
-            </button>
-          </div>
-
-          {errorMsg && (
-            <div className="bg-red-50 border border-red-200 text-red-800 p-3 rounded text-xs mb-5">
-              {errorMsg}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {mode === "register" && (
-              <>
-                <div>
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-[#68635c] block mb-1">
-                    Full Name *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={name}
-                    onChange={e => setName(e.target.value)}
-                    placeholder="e.g. Stephen Georgewill"
-                    className="w-full text-sm border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0]"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-[#68635c] block mb-1">
-                    Account Role *
-                  </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setRole("buyer")}
-                      className={`py-2 text-xs font-bold uppercase rounded border transition cursor-pointer ${
-                        role === "buyer"
-                          ? "bg-[#0a0a0a] text-white border-[#0a0a0a]"
-                          : "bg-white text-[#0a0a0a] border-[#d9d0c4]"
-                      }`}
-                    >
-                      Buyer / Patron
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRole("vendor")}
-                      className={`py-2 text-xs font-bold uppercase rounded border transition cursor-pointer ${
-                        role === "vendor"
-                          ? "bg-[#0a0a0a] text-white border-[#0a0a0a]"
-                          : "bg-white text-[#0a0a0a] border-[#d9d0c4]"
-                      }`}
-                    >
-                      Vendor
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-
-            <div>
-              <label className="text-[11px] font-bold uppercase tracking-wider text-[#68635c] block mb-1">
-                Email Address *
-              </label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="name@example.com"
-                className="w-full text-sm border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0]"
-              />
-            </div>
-
-            <div>
-              <label className="text-[11px] font-bold uppercase tracking-wider text-[#68635c] block mb-1">
-                Password *
-              </label>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full text-sm border border-[#d9d0c4] rounded px-3 py-2 bg-[#faf6f0]"
-              />
-            </div>
-
-            {mode === "register" && <TurnstileField action="register" onToken={setTurnstileToken} />}
-            <button
-              type="submit"
-              disabled={loginMutation.isPending || registerMutation.isPending}
-              className="w-full text-xs font-bold uppercase tracking-wider text-white brand-gradient py-3.5 rounded hover:opacity-95 transition disabled:opacity-50 cursor-pointer mt-2"
-            >
-              {loginMutation.isPending || registerMutation.isPending
-                ? "Authenticating..."
-                : mode === "login"
-                  ? "Sign In with JWT"
-                  : "Create Account & Sign In"}
-            </button>
-          </form>
-
-          {/* Quick Demo Credentials */}
-          <div className="mt-8 pt-6 border-t border-[#eee8df] text-xs">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-[#888] block mb-2">
-              Quick Test Accounts (Password: DemoPass123!)
-            </span>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => fillDemo("admin@kwantuhub.local")}
-                className="px-2.5 py-1 bg-[#faf6f0] border border-[#d9d0c4] rounded text-[11px] font-semibold text-[#0a0a0a] hover:bg-[#eae2d5] cursor-pointer"
-              >
-                Platform Admin
-              </button>
-              <button
-                type="button"
-                onClick={() => fillDemo("demo.vendor.eki@kwantuhub.local")}
-                className="px-2.5 py-1 bg-[#faf6f0] border border-[#d9d0c4] rounded text-[11px] font-semibold text-[#0a0a0a] hover:bg-[#eae2d5] cursor-pointer"
-              >
-                Aunty Eki (Vendor)
-              </button>
-              <button
-                type="button"
-                onClick={() => fillDemo("demo.buyer@kwantuhub.local")}
-                className="px-2.5 py-1 bg-[#faf6f0] border border-[#d9d0c4] rounded text-[11px] font-semibold text-[#0a0a0a] hover:bg-[#eae2d5] cursor-pointer"
-              >
-                Chioma (Buyer)
-              </button>
-            </div>
-          </div>
+  return <AuthCard
+    title={mode === "login" ? "Welcome back" : mode === "forgot" ? "Reset your password" : "Join KwantuHub"}
+    subtitle={<p>
+      {mode === "login" && <>New to KwantuHub?{" "}<button type="button" className={linkClass} onClick={() => switchMode("register")}>Create an account</button></>}
+      {mode === "register" && <>Already have an account?{" "}<button type="button" className={linkClass} onClick={() => switchMode("login")}>Sign in</button></>}
+      {mode === "forgot" && <>We'll email you a secure reset link.</>}
+    </p>}>
+        <div className="mt-6 space-y-3 text-center text-sm">
+          {failure && <p role="alert" className="form-error !mt-0 rounded-xl bg-[#fdecec] px-4 py-3">{failure}</p>}
+          {forgot.data && <p role="status" className="rounded-xl bg-[#eef6ee] px-4 py-3">{forgot.data.message}</p>}
+          {new URLSearchParams(window.location.search).get("passwordChanged") === "1" && <p role="status" className="rounded-xl bg-[#eef6ee] px-4 py-3">Your password was updated. Sign in again.</p>}
         </div>
-      </main>
-
-      <SiteFooter />
-    </div>
-  );
+        <form className="mt-2 space-y-5" onSubmit={event => {
+          event.preventDefault(); setError("");
+          if (busy || (mode !== "login" && turnstileConfigured && !token)) return;
+          if (mode === "login") login.mutate({ email, password });
+          else if (mode === "forgot") forgot.mutate({ email, turnstileToken: token });
+          else {
+            if (!terms) { setError("Accept the Terms and Privacy Policy to continue."); return; }
+            register.mutate({ firstName, lastName, email, role, termsAccepted: true, turnstileToken: token });
+          }
+        }}>
+          {mode === "register" && <>
+            <div role="radiogroup" aria-label="Account type" className="grid grid-cols-2 gap-1 rounded-full bg-[#f0e8dc] p-1">
+              {(["buyer", "vendor"] as const).map(value =>
+                <button type="button" role="radio" aria-checked={role === value} key={value} onClick={() => setRole(value)}
+                  className={`rounded-full py-2.5 text-sm font-semibold transition ${role === value ? "bg-white text-[#0a0a0a] shadow-sm" : "text-[#4b4843] hover:text-[#0a0a0a]"}`}>
+                  {value === "buyer" ? "I'm buying" : "I'm a vendor"}
+                </button>)}
+            </div>
+            {role === "buyer" && <div className="grid gap-4 sm:grid-cols-2">
+              <label className={labelClass}>First name<input autoComplete="given-name" required maxLength={100} className={fieldClass} value={firstName} onChange={event => setFirstName(event.target.value)} /></label>
+              <label className={labelClass}>Last name<input autoComplete="family-name" required maxLength={100} className={fieldClass} value={lastName} onChange={event => setLastName(event.target.value)} /></label>
+            </div>}
+            {role === "vendor" && <p className="rounded-xl bg-[#faf6f0] px-4 py-3 text-sm text-[#4b4843]">Step 1 of 3: account and contact verification. Your vendor status activates only after personal identity verification and storefront setup.</p>}
+          </>}
+          <label className={labelClass}>Email address<input type="email" autoComplete="email" required className={fieldClass} value={email} onChange={event => setEmail(event.target.value)} /></label>
+          {mode === "login" && <label className={labelClass}>Password<input type="password" autoComplete="current-password" required className={fieldClass} value={password} onChange={event => setPassword(event.target.value)} /></label>}
+          {mode === "register" && <>
+            <p className="text-sm text-[#4b4843]">You'll verify your email and choose a password next. Pending registrations expire after 24 hours.</p>
+            <label className="flex items-start gap-3 text-sm"><input type="checkbox" required className="mt-0.5 h-5 w-5 shrink-0 accent-[#0a0a0a]" checked={terms} onChange={event => setTerms(event.target.checked)} /><span>I accept the <Link href="/terms" className="underline underline-offset-2">Terms</Link> and <Link href="/privacy" className="underline underline-offset-2">Privacy Policy</Link>.</span></label>
+          </>}
+          {mode !== "login" && <div className="flex flex-col items-center"><TurnstileField key={`${mode}-${challengeKey}`} action={mode === "forgot" ? "password_reset" : "register"} onToken={setToken} /></div>}
+          <button disabled={busy || (mode !== "login" && turnstileConfigured && !token)} className="brand-button w-full !rounded-full !py-4 !text-sm" type="submit">{busy ? "Please wait..." : mode === "login" ? "Sign in" : mode === "forgot" ? "Send reset link" : "Continue to verification"}</button>
+        </form>
+        <div className="mt-6 space-y-3 text-center text-sm">
+          {mode === "login" && <button type="button" className={linkClass} onClick={() => switchMode("forgot")}>Forgot password?</button>}
+          {mode === "forgot" && <button type="button" className={linkClass} onClick={() => switchMode("login")}>Back to sign in</button>}
+          {pending.data && <Link className={`block ${linkClass}`} href={`/verify-account?next=${encodeURIComponent(accountReturnPath())}`}>Resume email verification for {pending.data.email}</Link>}
+          {pending.error && <p role="alert" className="form-error">{pending.error.message}</p>}
+        </div>
+  </AuthCard>;
 }

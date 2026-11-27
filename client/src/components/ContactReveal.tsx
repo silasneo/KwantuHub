@@ -1,7 +1,5 @@
 import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
-import { useAuth } from "@/_core/hooks/useAuth";
-import TurnstileField from "@/components/TurnstileField";
 
 interface ContactRevealProps {
   listingId: number;
@@ -10,8 +8,6 @@ interface ContactRevealProps {
 export default function ContactReveal({ listingId }: ContactRevealProps) {
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
-  const [turnstileToken, setTurnstileToken] = useState<string>();
-  const { isAuthenticated } = useAuth();
   const reveal = trpc.marketplace.revealContact.useMutation({
     onSuccess: () => setRevealed(true),
   });
@@ -40,14 +36,13 @@ export default function ContactReveal({ listingId }: ContactRevealProps) {
           <h2>Connect with this vendor</h2>
           <p>Reveal the contact channels the vendor has chosen to share.</p>
         </div>
-        {!revealed && isAuthenticated && (
+        {!revealed && (
           <>
-          <TurnstileField action="reveal_contact" onToken={setTurnstileToken} />
           <button
             type="button"
             className="brand-button contact-reveal__button"
             onClick={() =>
-              reveal.mutate({ listingId, turnstileToken })
+              reveal.mutate({ listingId })
             }
             disabled={reveal.isPending}
           >
@@ -55,7 +50,6 @@ export default function ContactReveal({ listingId }: ContactRevealProps) {
           </button>
           </>
         )}
-        {!revealed && !isAuthenticated && <p className="text-sm text-[#68635c]">Sign in and verify your email and phone to reveal vendor contact channels.</p>}
       </div>
 
       {revealed && channels.length > 0 && (

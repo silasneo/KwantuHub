@@ -1,12 +1,17 @@
 import { useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { mediaUrl } from "@/lib/storage";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { NotificationPreferences } from "@/components/NotificationPreferences";
 import { ContactVerification } from "@/components/ContactVerification";
 import { SavedSearchesCenter } from "@/components/SavedSearchesCenter";
+import { useDashboardTab } from "@/hooks/useDashboardTab";
+import { PortalRequestStatus } from "@/components/PortalRequestStatus";
+import { CollectionPager } from "@/components/CollectionPager";
+import { ConversationMessages } from "@/components/ConversationMessages";
 
 function formatRelativeTime(value: Date | string | null) {
   if (!value) return "No messages yet";
@@ -18,31 +23,39 @@ function formatRelativeTime(value: Date | string | null) {
 }
 
 export default function BuyerAccount() {
+  const [, setLocation] = useLocation();
   const { user, isAuthenticated } = useAuth();
-  const [activeTab, setActiveTab] = useState<
-    "wishlist" | "inquiries" | "history" | "reviews" | "settings"
-  >("inquiries");
+  const { activeTab, setActiveTab, inquiryId } = useDashboardTab(["wishlist", "inquiries", "history", "reviews", "notifications", "settings"] as const, "inquiries");
+  const { data: notificationCount } = trpc.notifications.unreadCount.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 30_000 });
   const [emailInquiries, setEmailInquiries] = useState(true);
   const [emailReplies, setEmailReplies] = useState(true);
   const [productUpdates, setProductUpdates] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [replyText, setReplyText] = useState<Record<number, string>>({});
+  const [wishlistPage, setWishlistPage] = useState(1);
+  const [inquiryPage, setInquiryPage] = useState(1);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [reviewPage, setReviewPage] = useState(1);
 
-  const { data: wishlist, isLoading: loadingWishlist } =
-    trpc.buyer.wishlist.useQuery(undefined, {
-      enabled: isAuthenticated,
+  const { data: wishlistData, isLoading: loadingWishlist, error: wishlistError } =
+    trpc.buyer.wishlist.useQuery({ page: wishlistPage }, {
+      enabled: isAuthenticated && activeTab === "wishlist",
     });
 
-  const { data: inquiries, isLoading: loadingInquiries } =
-    trpc.buyer.inquiries.useQuery(undefined, {
-      enabled: isAuthenticated,
+  const { data: inquiryData, isLoading: loadingInquiries, error: inquiriesError } =
+    trpc.buyer.inquiries.useQuery({ page: inquiryId ? 1 : inquiryPage, inquiryId: inquiryId ?? undefined }, {
+      enabled: isAuthenticated && activeTab === "inquiries",
     });
 
-  const { data: viewHistory, isLoading: loadingHistory } =
-    trpc.buyer.viewHistory.useQuery(undefined, { enabled: isAuthenticated });
-  const { data: submittedReviews, isLoading: loadingReviews } =
-    trpc.buyer.reviews.useQuery(undefined, { enabled: isAuthenticated });
+  const { data: historyData, isLoading: loadingHistory, error: historyError } =
+    trpc.buyer.viewHistory.useQuery({ page: historyPage }, { enabled: isAuthenticated && activeTab === "history" });
+  const { data: reviewData, isLoading: loadingReviews, error: reviewsError } =
+    trpc.buyer.reviews.useQuery({ page: reviewPage }, { enabled: isAuthenticated && activeTab === "reviews" });
+  const wishlist = wishlistData?.items;
+  const inquiries = inquiryData?.items;
+  const viewHistory = historyData?.items;
+  const submittedReviews = reviewData?.items;
 
   const utils = trpc.useUtils();
   const toggleWishlist = trpc.buyer.toggleWishlist.useMutation({
@@ -58,10 +71,11 @@ export default function BuyerAccount() {
     onSuccess: (_, vars) => {
       setReplyText(prev => ({ ...prev, [vars.inquiryId]: "" }));
       utils.buyer.inquiries.invalidate();
+      utils.buyer.messages.invalidate();
     },
   });
   const markInquiryRead = trpc.buyer.markInquiryRead.useMutation({
-    onSuccess: () => utils.buyer.inquiries.invalidate(),
+    onSuccess: () => { utils.buyer.inquiries.invalidate(); utils.buyer.messages.invalidate(); },
   });
   const closeInquiry = trpc.buyer.closeInquiry.useMutation({
     onSuccess: () => utils.buyer.inquiries.invalidate(),
@@ -81,6 +95,9 @@ export default function BuyerAccount() {
     onSuccess: () => {
       setCurrentPassword("");
       setNewPassword("");
+      utils.auth.me.setData(undefined, null);
+      utils.invalidate();
+      setLocation("/login?passwordChanged=1");
     },
   });
 
@@ -99,7 +116,7 @@ export default function BuyerAccount() {
             href="/login"
             className="text-xs font-bold uppercase tracking-wider text-white brand-gradient px-6 py-3 rounded"
           >
-            Sign In with JWT
+            Sign In
           </Link>
         </main>
         <SiteFooter />
@@ -125,12 +142,8 @@ export default function BuyerAccount() {
           </p>
         </div>
 
-        <div className="mb-8 max-w-2xl">
-          <NotificationCenter mode="panel" />
-        </div>
-
         {/* Tabs */}
-        <div className="flex border-b border-[#d9d0c4] mb-8 gap-8">
+        <div className="flex border-b border-[#d9d0c4] mb-8 gap-8 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <button
             onClick={() => setActiveTab("inquiries")}
             className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
@@ -139,10 +152,10 @@ export default function BuyerAccount() {
                 : "border-transparent text-[#68635c] hover:text-[#0a0a0a]"
             }`}
           >
-            Conversations ({inquiries?.length || 0})
+            Conversations ({inquiryData?.pagination.total ?? "..."})
             {(inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0) || 0) > 0 && (
               <span className="ml-2 rounded-full bg-[#d71466] px-2 py-0.5 text-[10px] text-white">
-                {inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0)} new
+                {inquiries?.reduce((total, inquiry) => total + inquiry.unreadCount, 0)} unread on this page
               </span>
             )}
           </button>
@@ -154,7 +167,7 @@ export default function BuyerAccount() {
                 : "border-transparent text-[#68635c] hover:text-[#0a0a0a]"
             }`}
           >
-            Saved Items ({wishlist?.length || 0})
+            Saved Items ({wishlistData?.pagination.total ?? "..."})
           </button>
           <button
             onClick={() => setActiveTab("history")}
@@ -164,7 +177,7 @@ export default function BuyerAccount() {
                 : "border-transparent text-[#68635c] hover:text-[#0a0a0a]"
             }`}
           >
-            Recently Viewed ({viewHistory?.length || 0})
+            Recently Viewed ({historyData?.pagination.total ?? "..."})
           </button>
           <button
             onClick={() => setActiveTab("reviews")}
@@ -174,7 +187,17 @@ export default function BuyerAccount() {
                 : "border-transparent text-[#68635c] hover:text-[#0a0a0a]"
             }`}
           >
-            My Reviews ({submittedReviews?.length || 0})
+            My Reviews ({reviewData?.pagination.total ?? "..."})
+          </button>
+          <button
+            onClick={() => setActiveTab("notifications")}
+            className={`pb-3 text-xs font-bold uppercase tracking-wider cursor-pointer border-b-2 transition ${
+              activeTab === "notifications"
+                ? "border-[#d71466] text-[#d71466]"
+                : "border-transparent text-[#68635c] hover:text-[#0a0a0a]"
+            }`}
+          >
+            Notifications ({notificationCount?.unreadCount ?? "..."})
           </button>
           <button
             onClick={() => setActiveTab("settings")}
@@ -189,6 +212,20 @@ export default function BuyerAccount() {
         </div>
 
         {/* Inquiries */}
+        <PortalRequestStatus queries={[{ error: wishlistError }, { error: inquiriesError }, { error: historyError }, { error: reviewsError }]}
+          mutations={[toggleWishlist, removeView, clearViews, replyInquiry, markInquiryRead, closeInquiry, reopenInquiry, archiveInquiry, unarchiveInquiry, reportConversation, updateProfile, changePassword]}
+          onRetry={() => { utils.buyer.invalidate(); }} />
+        {activeTab === "notifications" && (
+          <div className="max-w-3xl">
+            <NotificationCenter mode="panel" />
+          </div>
+        )}
+        {activeTab === "inquiries" && inquiryId && <p className="mb-4"><Link href="/account?tab=inquiries" className="underline">Show all conversations</Link></p>}
+        {activeTab === "inquiries" && inquiryId && inquiries && !inquiries.some(inquiry => inquiry.id === inquiryId) && <p role="alert" className="form-error mb-4">The linked conversation is unavailable in this account. Choose another conversation or <Link href="/support" className="underline">contact support</Link>.</p>}
+        {activeTab === "inquiries" && <CollectionPager pagination={inquiryData?.pagination} onPage={setInquiryPage} label="Conversations" />}
+        {activeTab === "wishlist" && <CollectionPager pagination={wishlistData?.pagination} onPage={setWishlistPage} label="Saved items" />}
+        {activeTab === "history" && <CollectionPager pagination={historyData?.pagination} onPage={setHistoryPage} label="View history" />}
+        {activeTab === "reviews" && <CollectionPager pagination={reviewData?.pagination} onPage={setReviewPage} label="Reviews" />}
         {activeTab === "inquiries" && (
           <div className="space-y-6">
             {loadingInquiries ? (
@@ -215,6 +252,8 @@ export default function BuyerAccount() {
               inquiries?.map(inq => (
                 <div
                   key={inq.id}
+                  id={`inquiry-${inq.id}`}
+                  tabIndex={-1}
                   className="bg-white border border-[#d9d0c4] p-6 rounded shadow-xs"
                 >
                   <div className="flex justify-between items-start mb-4 border-b border-[#eee8df] pb-3">
@@ -265,28 +304,7 @@ export default function BuyerAccount() {
                       ` · First vendor response ${Math.max(1, Math.round(inq.responseTimeSeconds / 60))}m`}
                   </p>
 
-                  <div className="space-y-3 pl-2">
-                    {inq.messages.map(m => (
-                      <div
-                        key={m.id}
-                        className={`p-3 rounded text-sm max-w-xl ${
-                          m.senderId === user?.id
-                            ? "bg-[#faf6f0] border border-[#eee8df] ml-auto text-right"
-                            : "bg-[#fff7ed] border border-[#fed7aa] mr-auto text-left"
-                        }`}
-                      >
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#888] block mb-1">
-                          {m.senderId === user?.id
-                            ? "You"
-                            : inq.vendor.businessName}
-                        </span>
-                        <p className="font-serif text-[#333]">{m.body}</p>
-                        <span className="mt-1 block text-[10px] text-[#999]">
-                          {formatRelativeTime(m.createdAt)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                  <ConversationMessages inquiryId={inq.id} viewerId={user!.id} otherName={inq.vendor.businessName} />
                   {inq.unreadCount > 0 && (
                     <button
                       type="button"
@@ -297,6 +315,8 @@ export default function BuyerAccount() {
                       Mark messages read
                     </button>
                   )}
+                  {inq.moderatorSuspendedAt && <p role="status" className="mt-4 p-3 border border-amber-300 bg-amber-50 text-sm">A moderator has restricted this conversation. Replies and state changes are disabled. Contact support if you need help.</p>}
+                  <fieldset disabled={Boolean(inq.moderatorSuspendedAt)} className="disabled:opacity-60">
                   {inq.status === "open" && (
                     <div className="mt-5 pt-4 border-t border-[#eee8df] space-y-3">
                       <div className="flex flex-col sm:flex-row gap-3">
@@ -366,6 +386,7 @@ export default function BuyerAccount() {
                       Unarchive conversation
                     </button>
                   )}
+                  </fieldset>
                   <button
                     type="button"
                     onClick={() => {
@@ -477,7 +498,7 @@ export default function BuyerAccount() {
                 {viewHistory?.map(({ listing, viewedAt }) => (
                   <article key={`${listing.id}-${viewedAt}`} className="bg-white border border-[#d9d0c4] rounded overflow-hidden">
                     {listing.media?.[0]?.url ? (
-                      <img src={listing.media[0].url} alt={listing.title} className="w-full h-40 object-cover" />
+                      <img src={mediaUrl(listing.media[0].storageKey || listing.media[0].url)} alt={listing.title} className="w-full h-40 object-cover" />
                     ) : <div className="h-40 brand-gradient" />}
                     <div className="p-5">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-[#d71466]">{listing.category.name}</p>
@@ -585,6 +606,14 @@ export default function BuyerAccount() {
               >
                 Open full profile →
               </Link>
+              {user?.role === "buyer" && (
+                <Link
+                  href="/vendor/onboarding"
+                  className="block mt-4 text-xs font-bold uppercase tracking-wider text-[#d71466] hover:underline"
+                >
+                  Become a vendor →
+                </Link>
+              )}
             </section>
             <div className="lg:col-span-2">
               <ContactVerification />

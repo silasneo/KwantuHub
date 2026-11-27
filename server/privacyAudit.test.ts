@@ -4,33 +4,7 @@ import { sanitizeReportOutput, generateAggregateCsv } from "./marketplaceReporti
 import { buildRobotsTxt, buildSitemapXml } from "./seoService";
 import { toPublicVendorProfile } from "./db";
 
-describe("Stage 4H privacy and public data exclusion audits", () => {
-  it("verifies drafts, archived, and suspended listings are excluded from public search", () => {
-    const candidateListings = [
-      { id: 1, title: "Kente Stole", status: "published" },
-      { id: 2, title: "Unfinished Draft", status: "draft" },
-      { id: 3, title: "Old Offering", status: "archived" },
-      { id: 4, title: "Hidden Item", status: "hidden" },
-    ];
-
-    const publicListings = candidateListings.filter(l => l.status === "published");
-    expect(publicListings.length).toBe(1);
-    expect(publicListings[0].id).toBe(1);
-  });
-
-  it("verifies unapproved and suspended vendors are excluded from public directory", () => {
-    const candidateVendors = [
-      { id: 10, name: "Artisan Co", approvalStatus: "approved" },
-      { id: 11, name: "New Applicant", approvalStatus: "pending" },
-      { id: 12, name: "Violating Seller", approvalStatus: "suspended" },
-      { id: 13, name: "Declined Store", approvalStatus: "rejected" },
-    ];
-
-    const publicVendors = candidateVendors.filter(v => v.approvalStatus === "approved");
-    expect(publicVendors.length).toBe(1);
-    expect(publicVendors[0].id).toBe(10);
-  });
-
+describe("privacy projection and formatting unit policies (not live acceptance)", () => {
   it("strips raw contacts, private notes, and identity evidence from aggregate report output", () => {
     const sanitized = sanitizeReportOutput({
       metric: "inquiries",
@@ -89,11 +63,11 @@ describe("Stage 4H privacy and public data exclusion audits", () => {
 
   it("keeps robots and sitemap output away from private routes and PII-bearing paths", () => {
     const robots = buildRobotsTxt("https://example.test");
-    const sitemap = buildSitemapXml("https://example.test", ["", "/marketplace", "/vendor/akoma", "/listings/kente", "/admin", "/account", "/vendor/private@example.com"]);
+    const sitemap = buildSitemapXml("https://example.test", ["", "/marketplace", "/vendors/akoma", "/listings/kente", "/admin", "/account", "/vendors/private@example.com"]);
 
     expect(robots).toContain("Disallow: /api/");
     expect(robots).toContain("Disallow: /admin");
-    expect(sitemap).toContain("/vendor/akoma");
+    expect(sitemap).toContain("/vendors/akoma");
     expect(sitemap).not.toContain("/admin");
     expect(sitemap).not.toContain("/account");
     expect(sitemap).not.toContain("private@example.com");

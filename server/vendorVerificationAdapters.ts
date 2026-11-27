@@ -1,5 +1,13 @@
 import { ENV } from "./_core/env";
-import type { NorthAmericaCountry } from "./vendorVerification";
+import { randomUUID } from "node:crypto";
+import isoCountries from "i18n-iso-countries";
+
+/** Didit v3 `expected_details.id_country` requires ISO 3166-1 alpha-3 (e.g. NGA), not alpha-2. */
+export function diditIdCountry(countryCode: string) {
+  const code = isoCountries.alpha2ToAlpha3(countryCode.toUpperCase());
+  if (!code) throw new Error(`No ISO alpha-3 code for country ${countryCode}`);
+  return code;
+}
 
 export type VerificationProviderName = "didit" | "veriff" | "sumsub" | "manual";
 
@@ -7,9 +15,11 @@ export type CreateVerificationSessionInput = {
   vendorId: number;
   userId: number;
   sessionType: "identity_document" | "liveness" | "proof_of_residence" | "combined_na_vendor";
-  countryCode: NorthAmericaCountry;
+  countryCode: string;
   firstName?: string;
   lastName?: string;
+  dateOfBirth?: string;
+  callbackPath?: string;
 };
 
 export type VerificationSessionResult = {
@@ -41,9 +51,11 @@ export class DiditVerificationAdapter implements VerificationAdapter {
       );
     }
 
-    const callback = `${ENV.appUrl}/vendor?tab=profile&verification=complete`;
+    const idCountry = diditIdCountry(input.countryCode);
+    const callback = new URL(input.callbackPath || "/vendor?tab=profile&verification=complete", ENV.appUrl).toString();
     const response = await fetch(`${this.baseUrl}/v3/session/`, {
       method: "POST",
+      signal: AbortSignal.timeout(15_000),
       headers: {
         "content-type": "application/json",
         "x-api-key": ENV.diditApiKey,
@@ -62,7 +74,8 @@ export class DiditVerificationAdapter implements VerificationAdapter {
         expected_details: {
           first_name: input.firstName || "Vendor",
           last_name: input.lastName || "Applicant",
-          id_country: input.countryCode,
+          id_country: idCountry,
+          ...(input.dateOfBirth ? { date_of_birth: input.dateOfBirth } : {}),
         },
       }),
     });
@@ -98,50 +111,11 @@ export class VeriffVerificationAdapter implements VerificationAdapter {
   readonly provider = "veriff" as const;
 
   isConfigured() {
-    return Boolean(process.env.VERIFF_API_KEY && process.env.VERIFF_SECRET_KEY);
+    return false;
   }
 
-  async createSession(input: CreateVerificationSessionInput): Promise<VerificationSessionResult> {
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    if (!this.isConfigured()) {
-      throw new Error(
-        "Veriff verification credentials are not configured on this server. Please contact platform support or submit manual verification documents."
-      );
-    }
-
-    const appUrl = ENV.appUrl;
-    const response = await fetch("https://stationapi.veriff.com/v1/sessions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-auth-client": process.env.VERIFF_API_KEY || "",
-      },
-      body: JSON.stringify({
-        verification: {
-          callback: `${appUrl}/api/webhooks/kyc/veriff`,
-          person: { firstName: input.firstName, lastName: input.lastName },
-          document: { country: input.countryCode },
-          vendorData: String(input.vendorId),
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Veriff session creation failed with HTTP ${response.status}`);
-    }
-
-    const body = (await response.json()) as { verification?: { id?: string; url?: string } };
-    if (!body.verification?.id) {
-      throw new Error("Veriff returned an invalid session response");
-    }
-
-    return {
-      provider: "veriff",
-      providerSessionId: body.verification.id,
-      verificationUrl: body.verification.url,
-      status: "created",
-      expiresAt,
-    };
+  async createSession(_input: CreateVerificationSessionInput): Promise<VerificationSessionResult> {
+    throw new Error("Veriff is disabled until its signed result integration is implemented.");
   }
 }
 
@@ -149,22 +123,11 @@ export class SumsubVerificationAdapter implements VerificationAdapter {
   readonly provider = "sumsub" as const;
 
   isConfigured() {
-    return Boolean(process.env.SUMSUB_APP_TOKEN && process.env.SUMSUB_SECRET_KEY);
+    return false;
   }
 
-  async createSession(input: CreateVerificationSessionInput): Promise<VerificationSessionResult> {
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    if (!this.isConfigured()) {
-      throw new Error(
-        "Sumsub verification credentials are not configured on this server. Please submit manual verification documents."
-      );
-    }
-    return {
-      provider: "sumsub",
-      providerSessionId: `sumsub_${input.vendorId}_${Date.now()}`,
-      status: "created",
-      expiresAt,
-    };
+  async createSession(_input: CreateVerificationSessionInput): Promise<VerificationSessionResult> {
+    throw new Error("Sumsub is disabled until its hosted and signed result integration is implemented.");
   }
 }
 
@@ -178,7 +141,7 @@ export class ManualVerificationAdapter implements VerificationAdapter {
   async createSession(input: CreateVerificationSessionInput): Promise<VerificationSessionResult> {
     return {
       provider: "manual",
-      providerSessionId: `manual_${input.vendorId}_${Date.now()}`,
+      providerSessionId: `manual_${input.vendorId}_${randomUUID()}`,
       status: "created",
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     };

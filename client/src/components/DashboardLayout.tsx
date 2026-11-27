@@ -65,7 +65,7 @@ export default function DashboardLayout({
             </h1>
             <p className="text-sm text-muted-foreground text-center max-w-sm">
               Access to this dashboard requires a KwantuHub account. Continue to
-              the secure JWT login flow.
+              secure sign-in.
             </p>
           </div>
           <Button

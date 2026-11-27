@@ -1,21 +1,25 @@
 import { useState } from "react";
-import { useRoute, Link } from "wouter";
+import { useRoute, useSearch, Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { mediaUrl } from "@/lib/storage";
 import { SiteHeader, SiteFooter } from "@/components/SiteChrome";
 import { SEOHead } from "@/components/SEOHead";
+import { CollectionPager } from "@/components/CollectionPager";
 
 export default function VendorStorefront() {
   const [, params] = useRoute("/vendors/:slug");
   const [, altParams] = useRoute("/storefronts/:slug");
   const slug = params?.slug || altParams?.slug || "";
+  const preview = new URLSearchParams(useSearch()).get("preview") === "1";
 
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [page, setPage] = useState(1);
 
   const {
     data: storefront,
     isLoading,
     error,
-  } = trpc.marketplace.getStorefront.useQuery({ slug }, { enabled: !!slug });
+  } = trpc.marketplace.getStorefront.useQuery({ slug, preview: preview || undefined, page }, { enabled: !!slug });
 
   if (isLoading) {
     return (
@@ -32,6 +36,7 @@ export default function VendorStorefront() {
   if (error || !storefront) {
     return (
       <div className="min-h-screen bg-[#f0e8dc] flex flex-col">
+        <SEOHead title="Storefront not found" noindex />
         <SiteHeader />
         <main className="flex-1 max-w-6xl mx-auto px-4 py-20 text-center">
           <h2 className="text-3xl font-serif font-bold text-[#0a0a0a] mb-4">
@@ -56,6 +61,8 @@ export default function VendorStorefront() {
         description={storefront.description?.slice(0, 160) || `Verified diaspora artisan storefront on KwantuHub.`}
         canonicalPath={`/vendors/${storefront.slug}`}
         ogType="website"
+        image={storefront.logoStorageKey || storefront.logoUrl ? mediaUrl(storefront.logoStorageKey || storefront.logoUrl) : undefined}
+        noindex={preview}
         jsonLd={{
           "@context": "https://schema.org",
           "@type": "Store",
@@ -72,13 +79,17 @@ export default function VendorStorefront() {
       <SiteHeader />
 
       <main className="flex-1">
+        {preview && <div role="status" className="max-w-6xl mx-auto p-4 my-4 border border-amber-300 bg-amber-50">
+          Private owner/administrator storefront preview. This does not publish this business or bypass activation, current verification, or administrator restrictions.
+          <Link href="/vendor?tab=profile" className="underline ml-2">Manage storefront</Link>
+        </div>}
         {/* Vendor Header / Hero */}
         <section className="bg-[#0a0a0a] text-[#f0e8dc] py-16 px-4 sm:px-8 border-b border-[#222]">
           <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-8">
             <div className="flex items-start gap-6">
-              {storefront.logoUrl ? (
+              {storefront.logoStorageKey || storefront.logoUrl ? (
                 <img
-                  src={storefront.logoUrl}
+                  src={mediaUrl(storefront.logoStorageKey || storefront.logoUrl)}
                   alt={storefront.displayName}
                   className="w-24 h-24 rounded object-cover border-2 border-[#333]"
                 />
@@ -158,7 +169,7 @@ export default function VendorStorefront() {
                 Creations & <span className="italic font-normal">Services</span>
               </h2>
               <span className="text-xs text-[#68635c]">
-                {storefront.listings.length} verified offerings
+                {storefront.pagination.total} {preview ? "preview offerings" : "published offerings"}
               </span>
             </div>
 
@@ -187,6 +198,7 @@ export default function VendorStorefront() {
             </div>
           </div>
 
+          <CollectionPager pagination={storefront.pagination} onPage={setPage} label="Storefront offerings" />
           {storefront.listings.length === 0 ? (
             <div className="bg-white border border-[#d9d0c4] p-12 rounded text-center text-[#68635c] font-serif">
               This vendor has no published offerings at the moment. Check back
@@ -195,16 +207,16 @@ export default function VendorStorefront() {
           ) : viewMode === "grid" ? (
             /* Masonry-style Grid */
             <div className="columns-1 sm:columns-2 md:columns-3 gap-6">
-              {storefront.listings.map((item: any) => (
+              {storefront.listings.map(item => (
                 <Link
                   key={item.id}
-                  href={`/listings/${item.slug}`}
+                  href={`/listings/${item.slug}${preview ? "?preview=1" : ""}`}
                   className="group inline-block w-full mb-6 break-inside-avoid bg-white border border-[#d9d0c4] rounded overflow-hidden shadow-xs hover:border-[#d71466] hover:shadow-md transition"
                 >
                   <div className="h-48 bg-[#0a0a0a] relative overflow-hidden">
                     {item.media?.[0]?.url ? (
                       <img
-                        src={item.media[0].url}
+                        src={mediaUrl(item.media[0].storageKey || item.media[0].url)}
                         alt={item.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
                       />
@@ -245,17 +257,17 @@ export default function VendorStorefront() {
           ) : (
             /* List View */
             <div className="space-y-4">
-              {storefront.listings.map((item: any) => (
+              {storefront.listings.map(item => (
                 <Link
                   key={item.id}
-                  href={`/listings/${item.slug}`}
+                  href={`/listings/${item.slug}${preview ? "?preview=1" : ""}`}
                   className="group bg-white border border-[#d9d0c4] rounded p-5 shadow-xs hover:border-[#d71466] transition flex flex-col sm:flex-row gap-6 items-start sm:items-center justify-between"
                 >
                   <div className="flex gap-5 items-center">
                     <div className="w-24 h-24 rounded bg-[#0a0a0a] overflow-hidden shrink-0">
                       {item.media?.[0]?.url ? (
                         <img
-                          src={item.media[0].url}
+                          src={mediaUrl(item.media[0].storageKey || item.media[0].url)}
                           alt={item.title}
                           className="w-full h-full object-cover"
                         />
